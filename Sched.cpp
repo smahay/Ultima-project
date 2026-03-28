@@ -302,6 +302,142 @@ class scheduler
 
         cout << "----------------------------------------------\n" << endl;
     }
+
+    void kill_task(int the_taskid)
+    {
+        tcb *task = find_task(the_taskid);
+
+        if (task == NULL)
+        {
+            cout << "kill_task FAILED: Task " << the_taskid << " not found." << endl;
+            return;
+        }
+
+        if (task->state == DEAD)
+        {
+            cout << "Task " << the_taskid << " is already DEAD." << endl;
+            return;
+        }
+
+        cout << "Killing task # " << the_taskid << endl;
+        task->state = DEAD;
+
+        if (task == current_task)
+        {
+            cout << "Current task was killed. Switching to next ready task..." << endl;
+
+            tcb *temp = current_task->next;
+
+            while (temp != current_task)
+            {
+                if (temp->state == READY)
+                {
+                    current_task = temp;
+                    current_task->state = RUNNING;
+                    current_task->start_time = clock();
+                    cout << "Started Running task # " << current_task->task_id << endl;
+                    return;
+                }
+
+                temp = temp->next;
+            }
+
+            current_task = NULL;
+            cout << "No READY task found." << endl;
+        }
+    }
+
+    void garbage_collect()
+    {
+        if (head == NULL)
+        {
+            cout << "No tasks to collect." << endl;
+            return;
+        }
+
+        cout << "Running garbage collector..." << endl;
+
+        // Case 1: remove DEAD tasks from the front (head)
+        while (head != NULL && head->state == DEAD)
+        {
+            // Only one node in the circular list
+            if (head->next == head)
+            {
+                delete head;
+                head = NULL;
+                current_task = NULL;
+                total_tasks--;
+                cout << "Removed last DEAD task." << endl;
+                return;
+            }
+
+            // Find the last node
+            tcb *last = head;
+            while (last->next != head)
+            {
+                last = last->next;
+            }
+
+            tcb *delete_me = head;
+            head = head->next;
+            last->next = head;
+
+            if (current_task == delete_me)
+            {
+                current_task = head;
+            }
+
+            delete delete_me;
+            total_tasks--;
+            cout << "Removed a DEAD task from the front." << endl;
+        }
+
+        // If list became empty after removing head tasks
+        if (head == NULL)
+        {
+            return;
+        }
+
+        // Case 2: remove DEAD tasks after the head
+        tcb *prev = head;
+        tcb *curr = head->next;
+
+        while (curr != head)
+        {
+            if (curr->state == DEAD)
+            {
+                tcb *delete_me = curr;
+                prev->next = curr->next;
+                curr = curr->next;
+
+                if (current_task == delete_me)
+                {
+                    current_task = prev;
+                }
+
+                delete delete_me;
+                total_tasks--;
+                cout << "Removed a DEAD task." << endl;
+            }
+            else
+            {
+                prev = curr;
+                curr = curr->next;
+            }
+        }
+
+        if (head == NULL)
+        {
+            current_task = NULL;
+            return;
+        }
+
+        // If current_task is somehow invalid, reset it
+        if (current_task != NULL && current_task->state == DEAD)
+        {
+            current_task = head;
+        }
+    }
 };
 
 class semaphore 
@@ -494,5 +630,21 @@ int main()
     swapper.yield();
     swapper.dump();
 
+    cout << "\nNow killing task 1...\n" << endl;
+    swapper.kill_task(1);
+    swapper.dump();
+
+    cout << "\nNow killing the current running task...\n" << endl;
+    swapper.kill_task(swapper.get_task_id());
+    swapper.dump();
+
+    waste_time(3);
+    swapper.yield();
+    swapper.dump();
+
+    cout << "\nNow running garbage collector...\n" << endl;
+    swapper.garbage_collect();
+    swapper.dump();
+    
     return 0;
 }
