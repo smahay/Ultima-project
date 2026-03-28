@@ -85,6 +85,24 @@ public:
         }
         cout << endl;
     }
+    std::string to_string() const
+    {
+        std::string result;
+        Node* current = frontPtr;
+
+        while (current != nullptr)
+        {
+            result += std::to_string(current->data) + " ";
+            current = current->next;
+        }
+
+        if (result.empty())
+        {
+            result = "EMPTY";
+        }
+
+        return result;
+    }
 };
 
 #endif
