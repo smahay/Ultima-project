@@ -84,7 +84,7 @@ class scheduler
 
         tcb *temp = head->next;
 
-        while (temp != NULL)
+        while (temp != head)
         {
             if (temp->task_id == the_taskid)
             {
@@ -92,6 +92,7 @@ class scheduler
             }
             temp = temp->next;
         }
+
         return NULL;
     }
 
@@ -138,20 +139,25 @@ class scheduler
         if (head == NULL)
         {
             head = new_task;
-            new_task
+            new_task->next = head;
         }
-        else 
+        else
         {
             tcb *temp = head;
-            while (temp->next != NULL)
+
+            while (temp->next != head)
             {
                 temp = temp->next;
             }
+
             temp->next = new_task;
+            new_task->next = head;
         }
 
         next_available_task_id++;
         total_tasks++;
+
+        return new_task->task_id;
     }
 
     void start() 
@@ -174,12 +180,12 @@ class scheduler
         {
             set_quantum(1000 / total_tasks);
         }
+
         sleep(1);
     }
 
-    void yield() 
+    void yield()
     {
-
         if (current_task == NULL)
         {
             cout << "No current task to yield." << endl;
@@ -188,25 +194,12 @@ class scheduler
 
         cout << "Current Task # " << current_task->task_id << " is trying to yield..." << endl;
 
-        clock_t elapsed_time = clock() - current_task->start_time;
-        cout << "Task: " << current_task->task_id << ", Elapsed time: " << elapsed_time << endl;
-        cout << "Current Quantum: " << current_quantum << endl;
-
-        if(elapsed_time >= current_quantum)
+        // If blocked or dead, switch immediately
+        if (current_task->state == BLOCKED || current_task->state == DEAD)
         {
-            cout << "Yielding....(Switching from task # " << current_task->task_id << " to next ready task) " << endl;
-
-            if(current_task->state == RUNNING)
-            {
-                current_task->state = READY;
-            }
+            cout << "Task is not runnable. Switching immediately..." << endl;
 
             tcb *temp = current_task->next;
-
-            if (temp == NULL)
-            {
-                temp = head;
-            }
 
             while (temp != current_task)
             {
@@ -220,39 +213,73 @@ class scheduler
                 }
 
                 temp = temp->next;
-
-                if (temp == NULL)
-                {
-                    temp = head;
-                }
             }
-            
+
+            cout << "POSSIBLE DEAD LOCK" << endl;
+            return;
+        }
+
+        clock_t elapsed_time = clock() - current_task->start_time;
+        cout << "Task: " << current_task->task_id << ", Elapsed time: " << elapsed_time << endl;
+        cout << "Current Quantum: " << current_quantum << endl;
+
+        if (elapsed_time >= current_quantum)
+        {
+            cout << "Yielding....(Switching from task # " << current_task->task_id << " to next ready task)" << endl;
+
+            if (current_task->state == RUNNING)
+            {
+                current_task->state = READY;
+            }
+
+            tcb *temp = current_task->next;
+
+            while (temp != current_task)
+            {
+                if (temp->state == READY)
+                {
+                    current_task = temp;
+                    current_task->start_time = clock();
+                    current_task->state = RUNNING;
+                    cout << "Started Running task # " << current_task->task_id << endl;
+                    return;
+                }
+
+                temp = temp->next;
+            }
+
             if (current_task->state == READY)
             {
                 current_task->start_time = clock();
                 current_task->state = RUNNING;
                 cout << "Started Running task # " << current_task->task_id << endl;
             }
-            else 
+            else
             {
-                cout << "POSSIVLE DEAD LOCK" << endl;
+                cout << "POSSIBLE DEAD LOCK" << endl;
             }
         }
-        else 
+        else
         {
-            cout << "NO Yield! (task: " << current_task->task_id << "Still have some quantum left)" << endl;
-        }    
+            cout << "NO Yield! (task: " << current_task->task_id << " Still has some quantum left)" << endl;
+        }
     }
-
     void dump()
     {
         cout << "---------------- PROCESS TABLE ---------------" << endl;
         cout << "Quantum = " << current_quantum << endl;
         cout << "Task-ID\t Elapsed Time\t State" << endl;
 
+        if (head == NULL)
+        {
+            cout << "No tasks in scheduler." << endl;
+            cout << "----------------------------------------------\n" << endl;
+            return;
+        }
+
         tcb *temp = head;
 
-        while (temp != NULL)
+        do
         {
             clock_t elapsed_time = 0;
 
@@ -271,6 +298,7 @@ class scheduler
             cout << endl;
             temp = temp->next;
         }
+        while (temp != head);
 
         cout << "----------------------------------------------\n" << endl;
     }
@@ -332,6 +360,7 @@ class semaphore
     {
         int task_id; 
         cout << "TaskID : " << sched_ptr->get_task_id() << ", LuckID : " << lucky_task << endl;
+
         if (sched_ptr->get_task_id() == lucky_task)
         {
             if (sema_queue.isEmpty())
@@ -370,18 +399,20 @@ class semaphore
                 cout << "Sema_Name: " << resource_name << endl;
                 cout << "Obtained by Task-ID: " << lucky_task << endl;
                 break; 
+
             case 1: 
                 cout << "Sema_Value: " << sema_value << endl;
-                cout << "Sema_Name:" << resource_name << endl;
+                cout << "Sema_Name: " << resource_name << endl;
                 cout << "Obtained by Task-ID: " << lucky_task << endl;
                 cout << "Sema-Queue: " << endl;
                 sema_queue.Print();
                 break;
+
             default: 
                 cout << "ERROR in SEMAPHORE DUMP level";
         }
-        cout << "------------------------------------------------" << endl;
 
+        cout << "------------------------------------------------" << endl;
     }
 };
 
@@ -413,7 +444,7 @@ int main()
     swapper.start();
     swapper.dump();
 
-    for (int i=0; i<3; i++)
+    for (int i = 0; i < 3; i++)
     {
         waste_time(3);
         swapper.yield();
@@ -447,6 +478,13 @@ int main()
     swapper.yield();
     swapper.dump();
 
+    while (swapper.get_task_id() != 3)
+    {
+        waste_time(3);
+        swapper.yield();
+        swapper.dump();
+    }
+
     t_id = swapper.get_task_id();
     cout << "Task " << t_id << " is trying to release the semaphore (Resource1)" << endl;
     swapper.dump();
@@ -456,5 +494,5 @@ int main()
     swapper.yield();
     swapper.dump();
 
-    return(0);
+    return 0;
 }
