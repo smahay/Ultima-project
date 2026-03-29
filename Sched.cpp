@@ -4,24 +4,41 @@
 
 using namespace std;
 
-scheduler::scheduler()
+scheduler::scheduler(int table_size)
 {
-    head = NULL;
-    current_task = NULL;
+    current_task = -1;
     next_available_task_id = 0;
     current_quantum = 300;
-    total_tasks = 0;
     log_win = NULL;
+    max_tasks = table_size;
+
+    if (max_tasks <= 0)
+    {
+        max_tasks = 1;
+    }
+
+    task_table = new tcb[max_tasks];
+
+    for (int i = 0; i < max_tasks; i++)
+    {
+        task_table[i].task_id = -1;
+        task_table[i].task_name = "";
+        task_table[i].state = DEAD;
+        task_table[i].start_time = 0;
+        task_table[i].thread = 0;
+        task_table[i].task_win = NULL;
+        task_table[i].kill_signal = false;
+        task_table[i].work_counter = 0;
+    }
 }
 
 scheduler::~scheduler()
 {
     pthread_mutex_lock(&sched_lock);
-
-    head = NULL;
-    current_task = NULL;
-    total_tasks = 0;
-
+    current_task = -1;
+    next_available_task_id = 0;
+    max_tasks = 0;
+    task_table = NULL;
     pthread_mutex_unlock(&sched_lock);
 }
 
@@ -42,31 +59,23 @@ void scheduler::set_log_window(WINDOW *win)
 
 tcb *scheduler::find_task(int the_taskid)
 {
-    if (head == NULL)
+    if (the_taskid < 0)
     {
         return NULL;
     }
 
-    if (head->task_id == the_taskid)
+    for (int i = 0; i < next_available_task_id; i++)
     {
-        return head;
-    }
-
-    tcb *temp = head->next;
-
-    while (temp != head)
-    {
-        if (temp->task_id == the_taskid)
+        if (task_table[i].task_id == the_taskid)
         {
-            return temp;
+            return &task_table[i];
         }
-        temp = temp->next;
     }
 
     return NULL;
 }
 
-void scheduler::set_state(int the_taskid, TaskState the_state)
+void scheduler::set_state(int the_taskid, string the_state)
 {
     pthread_mutex_lock(&sched_lock);
 
@@ -79,13 +88,13 @@ void scheduler::set_state(int the_taskid, TaskState the_state)
     pthread_mutex_unlock(&sched_lock);
 }
 
-TaskState scheduler::get_state(int the_taskid)
+string scheduler::get_state(int the_taskid)
 {
     pthread_mutex_lock(&sched_lock);
 
-    tcb *task = find_task(the_taskid);
+    string result = DEAD;
 
-    TaskState result = DEAD;
+    tcb *task = find_task(the_taskid);
     if (task != NULL)
     {
         result = task->state;
@@ -98,80 +107,77 @@ TaskState scheduler::get_state(int the_taskid)
 int scheduler::get_task_id()
 {
     pthread_mutex_lock(&sched_lock);
-
-    int result = -1;
-
-    if (current_task != NULL)
-    {
-        result = current_task->task_id;
-    }
-
+    int result = current_task;
     pthread_mutex_unlock(&sched_lock);
     return result;
 }
 
 tcb *scheduler::get_current_task()
 {
-    return current_task;
+    pthread_mutex_lock(&sched_lock);
+
+    tcb *result = NULL;
+
+    if (current_task >= 0 && current_task < next_available_task_id)
+    {
+        result = &task_table[current_task];
+    }
+
+    pthread_mutex_unlock(&sched_lock);
+    return result;
 }
 
 tcb *scheduler::create_task(const string &task_name, WINDOW *task_win)
 {
     pthread_mutex_lock(&sched_lock);
 
-    tcb *new_task = new tcb;
+    if (next_available_task_id >= max_tasks)
+    {
+        if (log_win != NULL)
+        {
+            char buff[256];
+            sprintf(buff, " Create_task() FAILED: Available tasks exceeded. MAX_TASKS = %d\n", max_tasks);
+            write_window(log_win, buff);
+        }
 
-    new_task->task_id = next_available_task_id;
-    new_task->task_name = task_name;
-    new_task->state = READY;
-    new_task->start_time = 0;
-    new_task->task_win = task_win;
-    new_task->kill_signal = false;
-    new_task->work_counter = 0;
-    new_task->next = NULL;
+        pthread_mutex_unlock(&sched_lock);
+        return NULL;
+    }
 
-    char buff[256];
-    sprintf(buff, " Creating task # %d (%s)\n", next_available_task_id, task_name.c_str());
+    int idx = next_available_task_id;
+
+    task_table[idx].task_id = idx;
+    task_table[idx].task_name = task_name;
+    task_table[idx].state = READY;
+    task_table[idx].start_time = 0;
+    task_table[idx].task_win = task_win;
+    task_table[idx].kill_signal = false;
+    task_table[idx].work_counter = 0;
+
     if (log_win != NULL)
     {
+        char buff[256];
+        sprintf(buff, " Creating task # %d (%s)\n", idx, task_name.c_str());
         write_window(log_win, buff);
     }
 
-    if (head == NULL)
-    {
-        head = new_task;
-        new_task->next = head;
-    }
-    else
-    {
-        tcb *temp = head;
-
-        while (temp->next != head)
-        {
-            temp = temp->next;
-        }
-
-        temp->next = new_task;
-        new_task->next = head;
-    }
-
     next_available_task_id++;
-    total_tasks++;
 
     pthread_mutex_unlock(&sched_lock);
-    return new_task;
+    return &task_table[idx];
 }
 
 void scheduler::start()
 {
     pthread_mutex_lock(&sched_lock);
 
-    if (head == NULL)
+    if (next_available_task_id == 0)
     {
         if (log_win != NULL)
         {
             write_window(log_win, " There are no tasks to start!\n");
         }
+
         pthread_mutex_unlock(&sched_lock);
         return;
     }
@@ -180,16 +186,16 @@ void scheduler::start()
     {
         write_window(log_win, " ................\n");
         write_window(log_win, " ................SCHEDULING STARTED\n");
-        write_window(log_win, " ................\n\n");
+        write_window(log_win, " ................\n");
     }
 
-    current_task = head;
-    current_task->start_time = clock();
-    current_task->state = RUNNING;
+    current_task = 0;
+    task_table[current_task].start_time = clock();
+    task_table[current_task].state = RUNNING;
 
-    if (total_tasks > 0)
+    if (next_available_task_id > 0)
     {
-        set_quantum(1000 / total_tasks);
+        set_quantum(1000 / next_available_task_id);
     }
 
     pthread_mutex_unlock(&sched_lock);
@@ -200,6 +206,12 @@ void scheduler::wait_until_running(tcb *task)
     while (true)
     {
         pthread_mutex_lock(&sched_lock);
+
+        if (task == NULL)
+        {
+            pthread_mutex_unlock(&sched_lock);
+            return;
+        }
 
         if (task->state == RUNNING || task->state == DEAD || task->kill_signal)
         {
@@ -216,70 +228,106 @@ void scheduler::yield()
 {
     pthread_mutex_lock(&sched_lock);
 
-    if (current_task == NULL)
+    if (current_task < 0 || current_task >= next_available_task_id)
     {
-        if (log_win != NULL)
-        {
-            write_window(log_win, " No current task to yield.\n");
-        }
         pthread_mutex_unlock(&sched_lock);
         return;
     }
 
+    int counter = 0;
     char buff[256];
-    sprintf(buff, " Current Task # %d is trying to yield...\n", current_task->task_id);
+
+    sprintf(buff, " Current Task # %d is trying to yield\n", current_task);
     if (log_win != NULL)
     {
         write_window(log_win, buff);
     }
 
-    if (current_task->state == BLOCKED || current_task->state == DEAD)
+    if (task_table[current_task].state == BLOCKED || task_table[current_task].state == DEAD)
     {
-        tcb *temp = current_task->next;
+        int next_task = (current_task + 1) % next_available_task_id;
 
-        while (temp != current_task)
+        while (task_table[next_task].state != READY && counter < next_available_task_id)
         {
-            if (temp->state == READY)
-            {
-                current_task = temp;
-                current_task->start_time = clock();
-                current_task->state = RUNNING;
-                pthread_mutex_unlock(&sched_lock);
-                return;
-            }
+            next_task = (next_task + 1) % next_available_task_id;
+            counter++;
+        }
 
-            temp = temp->next;
+        if (counter < next_available_task_id && task_table[next_task].state == READY)
+        {
+            current_task = next_task;
+            task_table[current_task].start_time = clock();
+            task_table[current_task].state = RUNNING;
+        }
+        else
+        {
+            current_task = -1;
+            if (log_win != NULL)
+            {
+                write_window(log_win, " POSSIBLE DEAD LOCK\n");
+            }
         }
 
         pthread_mutex_unlock(&sched_lock);
         return;
     }
 
-    if (current_task->state == RUNNING)
+    clock_t elapsed_time = clock() - task_table[current_task].start_time;
+
+    sprintf(buff, " Task: %d, elapsed_time: %ld\n", current_task, (long) elapsed_time);
+    if (log_win != NULL)
     {
-        current_task->state = READY;
+        write_window(log_win, buff);
     }
 
-    tcb *temp = current_task->next;
-
-    while (temp != current_task)
+    sprintf(buff, " Current Quantum: %ld\n", current_quantum);
+    if (log_win != NULL)
     {
-        if (temp->state == READY)
+        write_window(log_win, buff);
+    }
+
+    if (elapsed_time >= current_quantum)
+    {
+        if (task_table[current_task].state == RUNNING)
         {
-            current_task = temp;
-            current_task->start_time = clock();
-            current_task->state = RUNNING;
-            pthread_mutex_unlock(&sched_lock);
-            return;
+            task_table[current_task].state = READY;
         }
 
-        temp = temp->next;
-    }
+        int next_task = (current_task + 1) % next_available_task_id;
 
-    if (current_task->state == READY)
+        while (task_table[next_task].state != READY && counter < next_available_task_id - 1)
+        {
+            next_task = (next_task + 1) % next_available_task_id;
+            counter++;
+        }
+
+        if (counter < next_available_task_id && task_table[next_task].state == READY)
+        {
+            current_task = next_task;
+            task_table[current_task].start_time = clock();
+            task_table[current_task].state = RUNNING;
+
+            sprintf(buff, " Started Running task # %d\n", current_task);
+            if (log_win != NULL)
+            {
+                write_window(log_win, buff);
+            }
+        }
+        else
+        {
+            if (log_win != NULL)
+            {
+                write_window(log_win, " POSSIBLE DEAD LOCK\n");
+            }
+        }
+    }
+    else
     {
-        current_task->start_time = clock();
-        current_task->state = RUNNING;
+        sprintf(buff, " No Yield! (task: %d still has some quantum left)\n", current_task);
+        if (log_win != NULL)
+        {
+            write_window(log_win, buff);
+        }
     }
 
     pthread_mutex_unlock(&sched_lock);
@@ -289,72 +337,55 @@ void scheduler::dump(int level)
 {
     pthread_mutex_lock(&sched_lock);
 
-    std::string out;
+    string out;
     char buff[256];
-    const char *state_text = "";
 
     out += " ---------------- PROCESS TABLE ---------------\n";
-    sprintf(buff, " Quantum = %d\n", current_quantum);
+    sprintf(buff, " Quantum = %ld\n", current_quantum);
     out += buff;
     out += " Task-Name\tTask-ID\tState\n";
 
-    if (head == NULL)
+    if (next_available_task_id == 0)
     {
         out += " No tasks in scheduler.\n";
         out += " ----------------------------------------------\n";
+
         pthread_mutex_unlock(&sched_lock);
+
         if (log_win != NULL)
         {
             write_window(log_win, out.c_str());
         }
+
         return;
     }
 
-    tcb *temp = head;
-    do
+    for (int i = 0; i < next_available_task_id; i++)
     {
-        if (temp->state == READY)
-        {
-            state_text = "READY";
-        }
-        else if (temp->state == RUNNING)
-        {
-            state_text = "RUNNING";
-        }
-        else if (temp->state == BLOCKED)
-        {
-            state_text = "BLOCKED";
-        }
-        else
-        {
-            state_text = "DEAD";
-        }
-
         sprintf(buff, " %s\t\t%d\t%s",
-                temp->task_name.c_str(),
-                temp->task_id,
-                state_text);
+                task_table[i].task_name.c_str(),
+                task_table[i].task_id,
+                task_table[i].state.c_str());
         out += buff;
 
-        if (temp == current_task)
+        if (i == current_task)
         {
             out += " <-- CURRENT PROCESS";
         }
 
         if (level > 1)
         {
-            sprintf(buff, " [work=%d]", temp->work_counter);
+            sprintf(buff, " [work=%d]", task_table[i].work_counter);
             out += buff;
         }
 
         out += "\n";
-        temp = temp->next;
     }
-    while (temp != head);
 
     out += " ----------------------------------------------\n";
 
     pthread_mutex_unlock(&sched_lock);
+
     if (log_win != NULL)
     {
         write_window(log_win, out.c_str());
@@ -366,51 +397,49 @@ void scheduler::kill_task(int the_taskid)
     pthread_mutex_lock(&sched_lock);
 
     tcb *task = find_task(the_taskid);
-
     if (task == NULL)
     {
-        char buff[256];
-        sprintf(buff, " kill_task FAILED: Task %d not found.\n", the_taskid);
         if (log_win != NULL)
         {
+            char buff[256];
+            sprintf(buff, " kill_task FAILED: Task %d not found.\n", the_taskid);
             write_window(log_win, buff);
         }
+
         pthread_mutex_unlock(&sched_lock);
         return;
-    }
-
-    char buff[256];
-    sprintf(buff, " Killing task # %d\n", the_taskid);
-    if (log_win != NULL)
-    {
-        write_window(log_win, buff);
     }
 
     task->kill_signal = true;
     task->state = DEAD;
 
-    if (task == current_task)
+    if (log_win != NULL)
     {
-        bool found_next = false;
-        tcb *temp = current_task->next;
+        char buff[256];
+        sprintf(buff, " Killing task # %d\n", the_taskid);
+        write_window(log_win, buff);
+    }
 
-        while (temp != current_task)
+    if (current_task == the_taskid)
+    {
+        int counter = 0;
+        int next_task = (current_task + 1) % next_available_task_id;
+
+        while (task_table[next_task].state != READY && counter < next_available_task_id)
         {
-            if (temp->state == READY)
-            {
-                current_task = temp;
-                current_task->start_time = clock();
-                current_task->state = RUNNING;
-                found_next = true;
-                break;
-            }
-
-            temp = temp->next;
+            next_task = (next_task + 1) % next_available_task_id;
+            counter++;
         }
 
-        if (!found_next)
+        if (counter < next_available_task_id && task_table[next_task].state == READY)
         {
-            current_task = NULL;
+            current_task = next_task;
+            task_table[current_task].state = RUNNING;
+            task_table[current_task].start_time = clock();
+        }
+        else
+        {
+            current_task = -1;
         }
     }
 
@@ -421,12 +450,13 @@ void scheduler::garbage_collect()
 {
     pthread_mutex_lock(&sched_lock);
 
-    if (head == NULL)
+    if (next_available_task_id == 0)
     {
         if (log_win != NULL)
         {
-            write_window(log_win, " No tasks to collect.\n");
+            write_window(log_win, " No tasks in scheduler.\n");
         }
+
         pthread_mutex_unlock(&sched_lock);
         return;
     }
@@ -436,59 +466,50 @@ void scheduler::garbage_collect()
         write_window(log_win, " Running garbage collector...\n");
     }
 
-    while (head != NULL && head->state == DEAD)
+    int write_idx = 0;
+
+    for (int read_idx = 0; read_idx < next_available_task_id; read_idx++)
     {
-        if (head->next == head)
+        if (task_table[read_idx].state != DEAD)
         {
-            head = NULL;
-            current_task = NULL;
-            total_tasks--;
-            pthread_mutex_unlock(&sched_lock);
-            return;
+            if (write_idx != read_idx)
+            {
+                task_table[write_idx] = task_table[read_idx];
+                task_table[write_idx].task_id = write_idx;
+            }
+
+            write_idx++;
         }
-
-        tcb *last = head;
-        while (last->next != head)
-        {
-            last = last->next;
-        }
-
-        tcb *dead_task = head;
-        head = head->next;
-        last->next = head;
-
-        if (current_task == dead_task)
-        {
-            current_task = head;
-        }
-
-        total_tasks--;
     }
 
-    if (head != NULL)
+    for (int i = write_idx; i < max_tasks; i++)
     {
-        tcb *prev = head;
-        tcb *temp = head->next;
+        task_table[i].task_id = -1;
+        task_table[i].task_name = "";
+        task_table[i].state = DEAD;
+        task_table[i].start_time = 0;
+        task_table[i].thread = 0;
+        task_table[i].task_win = NULL;
+        task_table[i].kill_signal = false;
+        task_table[i].work_counter = 0;
+    }
 
-        while (temp != head)
+    next_available_task_id = write_idx;
+
+    if (next_available_task_id == 0)
+    {
+        current_task = -1;
+    }
+    else
+    {
+        current_task = 0;
+
+        for (int i = 0; i < next_available_task_id; i++)
         {
-            if (temp->state == DEAD)
+            if (task_table[i].state == RUNNING)
             {
-                tcb *dead_task = temp;
-                prev->next = temp->next;
-                temp = temp->next;
-
-                if (current_task == dead_task)
-                {
-                    current_task = prev;
-                }
-
-                total_tasks--;
-            }
-            else
-            {
-                prev = temp;
-                temp = temp->next;
+                current_task = i;
+                break;
             }
         }
     }

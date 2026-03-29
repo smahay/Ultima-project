@@ -6,23 +6,25 @@
 #include "Queue.h"
 #include "Sched.h"
 
+using namespace std;
+
 class semaphore
 {
 private:
-    std::string resource_name;
+    string resource_name;
     int sema_value;
-    int owner_task_id;
+    int lucky_task;
 
     Queue<int> sema_queue;
     scheduler *sched_ptr;
     WINDOW *log_win;
 
 public:
-    semaphore(int starting_value, std::string name, scheduler *theScheduler);
+    semaphore(int starting_value, string name, scheduler *theScheduler);
     ~semaphore();
     void set_log_window(WINDOW *win);
 
-    bool down(int taskID);
+    void down(int taskID);
     void up();
 
     void dump(int level);

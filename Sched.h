@@ -7,43 +7,40 @@
 #include <pthread.h>
 #include <ncurses.h>
 
+using namespace std;
+
 void write_window(WINDOW * Win, const char* text);
 
-enum TaskState
-{
-    READY,
-    RUNNING,
-    BLOCKED,
-    DEAD
-};
+const string READY = "READY";
+const string RUNNING = "RUNNING";
+const string BLOCKED = "BLOCKED";
+const string DEAD = "DEAD";
 
 struct tcb
 {
     int task_id;
-    std::string task_name;
-    TaskState state;
+    string task_name;
+    string state;
     clock_t start_time;
     pthread_t thread;
     WINDOW *task_win;
     bool kill_signal;
     int work_counter;
-
-    tcb *next;
 };
 
 class scheduler
 {
     private:
-        tcb *head;
-        tcb *current_task;
-        int current_quantum;
+        int current_task;
+        long current_quantum;
         int next_available_task_id;
-        int total_tasks;
+        int max_tasks;
+        tcb *task_table;
         WINDOW *log_win;
         pthread_mutex_t sched_lock = PTHREAD_MUTEX_INITIALIZER;
 
     public:
-        scheduler();
+        scheduler(int table_size);
         ~scheduler();
 
         void set_quantum(long quantum);
@@ -51,12 +48,12 @@ class scheduler
         void set_log_window(WINDOW *win);
 
         tcb *find_task(int the_taskid);
-        void set_state(int the_taskid, TaskState the_state);
-        TaskState get_state(int the_taskid);
+        void set_state(int the_taskid, string the_state);
+        string get_state(int the_taskid);
 
         int get_task_id();
         tcb *get_current_task();
-        tcb *create_task(const std::string &task_name, WINDOW *task_win);
+        tcb *create_task(const string &task_name, WINDOW *task_win);
 
         void start();
         void yield();

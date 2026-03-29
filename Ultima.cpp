@@ -25,7 +25,6 @@ void *perform_simple_output(void *arguments);
 struct thread_data
 {
     int thread_no;
-    int thread_state;
     WINDOW *thread_win;
     WINDOW *resource_win;
     WINDOW *log_win;
@@ -126,12 +125,12 @@ void *perform_simple_output(void *arguments)
         write_window(task->task_win, buff);
         write_window(log_win, buff);
 
-        bool got_resource = sem->down(task->task_id);
+        sem->down(task->task_id);
 
         sem->dump(1);
         sched->dump();
 
-        if (!got_resource)
+        if (task->state == BLOCKED)
         {
             sprintf(buff, " Task %d waiting resource\n", task->task_id);
             write_window(task->task_win, buff);
@@ -208,7 +207,15 @@ int main()
     write_window(resource_win, 2, 1, "Shared Resource Window");
     write_window(log_win, 2, 1, "Log Window");
 
-    scheduler swapper;
+    WINDOW *task_windows[4];
+    task_windows[0] = task1_win;
+    task_windows[1] = task2_win;
+    task_windows[2] = task3_win;
+    task_windows[3] = task4_win;
+
+    int task_count = sizeof(task_windows) / sizeof(task_windows[0]);
+
+    scheduler swapper(task_count);
     semaphore resource1_sema(1, "resource1", &swapper);
     swapper.set_log_window(log_win);
     resource1_sema.set_log_window(log_win);
@@ -219,7 +226,6 @@ int main()
     tcb *t4 = swapper.create_task("Task4", task4_win);
 
     thread_args_1.thread_no = 1;
-    thread_args_1.thread_state = RUNNING;
     thread_args_1.thread_win = task1_win;
     thread_args_1.resource_win = resource_win;
     thread_args_1.log_win = log_win;
@@ -231,7 +237,6 @@ int main()
     thread_args_1.task = t1;
 
     thread_args_2.thread_no = 2;
-    thread_args_2.thread_state = RUNNING;
     thread_args_2.thread_win = task2_win;
     thread_args_2.resource_win = resource_win;
     thread_args_2.log_win = log_win;
@@ -243,7 +248,6 @@ int main()
     thread_args_2.task = t2;
 
     thread_args_3.thread_no = 3;
-    thread_args_3.thread_state = RUNNING;
     thread_args_3.thread_win = task3_win;
     thread_args_3.resource_win = resource_win;
     thread_args_3.log_win = log_win;
@@ -255,7 +259,6 @@ int main()
     thread_args_3.task = t3;
 
     thread_args_4.thread_no = 4;
-    thread_args_4.thread_state = RUNNING;
     thread_args_4.thread_win = task4_win;
     thread_args_4.resource_win = resource_win;
     thread_args_4.log_win = log_win;
