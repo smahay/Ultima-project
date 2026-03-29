@@ -143,6 +143,15 @@ void *perform_simple_output(void *arguments)
         write_window(task->task_win, buff);
         write_window(log_win, buff);
 
+        sched->yield();
+        sched->dump();
+        sched->wait_until_running(task);
+
+        if (task->kill_signal || task->state == DEAD)
+        {
+            break;
+        }
+
         sleep(1);
 
         sprintf(buff, " Task %d released resource\n", task->task_id);
