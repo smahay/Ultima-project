@@ -1,20 +1,8 @@
 #include "Sched.h"
-#include <unistd.h>
 #include <cstdio>
+#include <unistd.h>
 
 using namespace std;
-
-string state_to_string(TaskState state)
-{
-    switch (state)
-    {
-        case READY:   return "READY";
-        case RUNNING: return "RUNNING";
-        case BLOCKED: return "BLOCKED";
-        case DEAD:    return "DEAD";
-        default:      return "UNKNOWN";
-    }
-}
 
 scheduler::scheduler()
 {
@@ -23,140 +11,18 @@ scheduler::scheduler()
     next_available_task_id = 0;
     current_quantum = 300;
     total_tasks = 0;
-
-    pthread_mutex_init(&sched_lock, NULL);
-}
-
-// Find the next READY task after start_task in the circular list.
-tcb *scheduler::find_next_ready_task(tcb *start_task)
-{
-    if (start_task == NULL)
-    {
-        return NULL;
-    }
-
-    tcb *next_task = start_task->next;
-    while (next_task != start_task)
-    {
-        if (next_task->state == READY)
-        {
-            return next_task;
-        }
-        next_task = next_task->next;
-    }
-
-    return NULL;
-}
-
-// Move CPU ownership to next_task and wake its worker thread.
-void scheduler::switch_to_task(tcb *next_task)
-{
-    if (next_task == NULL)
-    {
-        return;
-    }
-
-    current_task = next_task;
-    current_task->start_time = clock();
-    current_task->state = RUNNING;
-    pthread_cond_signal(&current_task->run_cond);
-}
-
-// Remove DEAD nodes from the front (head) of the circular list.
-void scheduler::remove_head_dead_tasks()
-{
-    while (head != NULL && head->state == DEAD)
-    {
-        if (head->next == head)
-        {
-            pthread_cond_destroy(&head->run_cond);
-            delete head;
-            head = NULL;
-            current_task = NULL;
-            total_tasks--;
-            return;
-        }
-
-        tcb *last = head;
-        while (last->next != head)
-        {
-            last = last->next;
-        }
-
-        tcb *delete_me = head;
-        head = head->next;
-        last->next = head;
-
-        if (current_task == delete_me)
-        {
-            current_task = head;
-        }
-
-        pthread_cond_destroy(&delete_me->run_cond);
-        delete delete_me;
-        total_tasks--;
-    }
-}
-
-// Remove DEAD nodes from the rest of the circular list.
-void scheduler::remove_internal_dead_tasks()
-{
-    if (head == NULL)
-    {
-        return;
-    }
-
-    tcb *prev = head;
-    tcb *task = head->next;
-
-    while (task != head)
-    {
-        if (task->state == DEAD)
-        {
-            tcb *delete_me = task;
-            prev->next = task->next;
-            task = task->next;
-
-            if (current_task == delete_me)
-            {
-                current_task = prev;
-            }
-
-            pthread_cond_destroy(&delete_me->run_cond);
-            delete delete_me;
-            total_tasks--;
-        }
-        else
-        {
-            prev = task;
-            task = task->next;
-        }
-    }
+    log_win = NULL;
 }
 
 scheduler::~scheduler()
 {
     pthread_mutex_lock(&sched_lock);
 
-    if (head != NULL)
-    {
-        tcb *temp = head->next;
-
-        while (temp != head)
-        {
-            tcb *delete_me = temp;
-            temp = temp->next;
-            pthread_cond_destroy(&delete_me->run_cond);
-            delete delete_me;
-        }
-
-        pthread_cond_destroy(&head->run_cond);
-        delete head;
-    }
+    head = NULL;
+    current_task = NULL;
+    total_tasks = 0;
 
     pthread_mutex_unlock(&sched_lock);
-    pthread_mutex_destroy(&sched_lock);
-
 }
 
 void scheduler::set_quantum(long quantum)
@@ -169,6 +35,11 @@ long scheduler::get_quantum()
     return current_quantum;
 }
 
+void scheduler::set_log_window(WINDOW *win)
+{
+    log_win = win;
+}
+
 tcb *scheduler::find_task(int the_taskid)
 {
     if (head == NULL)
@@ -176,8 +47,14 @@ tcb *scheduler::find_task(int the_taskid)
         return NULL;
     }
 
-    tcb *temp = head;
-    do
+    if (head->task_id == the_taskid)
+    {
+        return head;
+    }
+
+    tcb *temp = head->next;
+
+    while (temp != head)
     {
         if (temp->task_id == the_taskid)
         {
@@ -185,7 +62,6 @@ tcb *scheduler::find_task(int the_taskid)
         }
         temp = temp->next;
     }
-    while (temp != head);
 
     return NULL;
 }
@@ -198,10 +74,6 @@ void scheduler::set_state(int the_taskid, TaskState the_state)
     if (task != NULL)
     {
         task->state = the_state;
-        if (the_state == READY)
-        {
-            pthread_cond_signal(&task->run_cond);
-        }
     }
 
     pthread_mutex_unlock(&sched_lock);
@@ -210,6 +82,7 @@ void scheduler::set_state(int the_taskid, TaskState the_state)
 TaskState scheduler::get_state(int the_taskid)
 {
     pthread_mutex_lock(&sched_lock);
+
     tcb *task = find_task(the_taskid);
 
     TaskState result = DEAD;
@@ -225,6 +98,7 @@ TaskState scheduler::get_state(int the_taskid)
 int scheduler::get_task_id()
 {
     pthread_mutex_lock(&sched_lock);
+
     int result = -1;
 
     if (current_task != NULL)
@@ -255,11 +129,13 @@ tcb *scheduler::create_task(const string &task_name, WINDOW *task_win)
     new_task->kill_signal = false;
     new_task->work_counter = 0;
     new_task->next = NULL;
-    pthread_cond_init(&new_task->run_cond, NULL);
 
     char buff[256];
-    sprintf(buff, "Creating task # %d (%s)\n", next_available_task_id, task_name.c_str());
-    write_log(buff);
+    sprintf(buff, " Creating task # %d (%s)\n", next_available_task_id, task_name.c_str());
+    if (log_win != NULL)
+    {
+        write_window(log_win, buff);
+    }
 
     if (head == NULL)
     {
@@ -269,6 +145,7 @@ tcb *scheduler::create_task(const string &task_name, WINDOW *task_win)
     else
     {
         tcb *temp = head;
+
         while (temp->next != head)
         {
             temp = temp->next;
@@ -291,14 +168,20 @@ void scheduler::start()
 
     if (head == NULL)
     {
-        write_log("There are no tasks to start!\n");
+        if (log_win != NULL)
+        {
+            write_window(log_win, " There are no tasks to start!\n");
+        }
         pthread_mutex_unlock(&sched_lock);
         return;
     }
 
-    write_log("................\n");
-    write_log("................SCHEDULING STARTED\n");
-    write_log("................\n\n");
+    if (log_win != NULL)
+    {
+        write_window(log_win, " ................\n");
+        write_window(log_win, " ................SCHEDULING STARTED\n");
+        write_window(log_win, " ................\n\n");
+    }
 
     current_task = head;
     current_task->start_time = clock();
@@ -309,27 +192,24 @@ void scheduler::start()
         set_quantum(1000 / total_tasks);
     }
 
-    pthread_cond_signal(&current_task->run_cond);
     pthread_mutex_unlock(&sched_lock);
 }
 
 void scheduler::wait_until_running(tcb *task)
 {
-    pthread_mutex_lock(&sched_lock);
-
-    while (task->state != RUNNING && !task->kill_signal && task->state != DEAD)
+    while (true)
     {
-        pthread_cond_wait(&task->run_cond, &sched_lock);
+        pthread_mutex_lock(&sched_lock);
+
+        if (task->state == RUNNING || task->state == DEAD || task->kill_signal)
+        {
+            pthread_mutex_unlock(&sched_lock);
+            return;
+        }
+
+        pthread_mutex_unlock(&sched_lock);
+        sleep(1);
     }
-
-    pthread_mutex_unlock(&sched_lock);
-}
-
-void scheduler::wake_task(tcb *task)
-{
-    pthread_mutex_lock(&sched_lock);
-    pthread_cond_signal(&task->run_cond);
-    pthread_mutex_unlock(&sched_lock);
 }
 
 void scheduler::yield()
@@ -338,78 +218,122 @@ void scheduler::yield()
 
     if (current_task == NULL)
     {
-        write_log("No current task to yield.\n");
-        pthread_mutex_unlock(&sched_lock);
-        return;
-    }
-
-    char buff[256];
-    sprintf(buff, "Current Task # %d is trying to yield...\n", current_task->task_id);
-    write_log(buff);
-
-    // If current task cannot run, switch away immediately.
-    if (current_task->state == BLOCKED || current_task->state == DEAD)
-    {
-        tcb *next_task = find_next_ready_task(current_task);
-        if (next_task != NULL)
+        if (log_win != NULL)
         {
-            switch_to_task(next_task);
+            write_window(log_win, " No current task to yield.\n");
         }
         pthread_mutex_unlock(&sched_lock);
         return;
     }
 
-    // Move current task back to READY before round-robin search.
+    char buff[256];
+    sprintf(buff, " Current Task # %d is trying to yield...\n", current_task->task_id);
+    if (log_win != NULL)
+    {
+        write_window(log_win, buff);
+    }
+
+    if (current_task->state == BLOCKED || current_task->state == DEAD)
+    {
+        tcb *temp = current_task->next;
+
+        while (temp != current_task)
+        {
+            if (temp->state == READY)
+            {
+                current_task = temp;
+                current_task->start_time = clock();
+                current_task->state = RUNNING;
+                pthread_mutex_unlock(&sched_lock);
+                return;
+            }
+
+            temp = temp->next;
+        }
+
+        pthread_mutex_unlock(&sched_lock);
+        return;
+    }
+
     if (current_task->state == RUNNING)
     {
         current_task->state = READY;
     }
 
-    // Pick the next READY task in the circular list.
-    tcb *next_task = find_next_ready_task(current_task);
-    if (next_task != NULL)
+    tcb *temp = current_task->next;
+
+    while (temp != current_task)
     {
-        switch_to_task(next_task);
-        pthread_mutex_unlock(&sched_lock);
-        return;
+        if (temp->state == READY)
+        {
+            current_task = temp;
+            current_task->start_time = clock();
+            current_task->state = RUNNING;
+            pthread_mutex_unlock(&sched_lock);
+            return;
+        }
+
+        temp = temp->next;
     }
 
-    // If no other READY task exists, continue running current task.
     if (current_task->state == READY)
     {
-        switch_to_task(current_task);
+        current_task->start_time = clock();
+        current_task->state = RUNNING;
     }
 
     pthread_mutex_unlock(&sched_lock);
 }
 
-std::string scheduler::dump_to_string()
+void scheduler::dump(int level)
 {
     pthread_mutex_lock(&sched_lock);
 
     std::string out;
     char buff[256];
+    const char *state_text = "";
 
-    out += "---------------- PROCESS TABLE ---------------\n";
-    sprintf(buff, "Quantum = %d\n", current_quantum);
+    out += " ---------------- PROCESS TABLE ---------------\n";
+    sprintf(buff, " Quantum = %d\n", current_quantum);
     out += buff;
-    out += "Task-Name\tTask-ID\tState\n";
+    out += " Task-Name\tTask-ID\tState\n";
 
     if (head == NULL)
     {
-        out += "No tasks in scheduler.\n";
-        out += "----------------------------------------------\n";
+        out += " No tasks in scheduler.\n";
+        out += " ----------------------------------------------\n";
         pthread_mutex_unlock(&sched_lock);
-        return out;
+        if (log_win != NULL)
+        {
+            write_window(log_win, out.c_str());
+        }
+        return;
     }
 
     tcb *temp = head;
     do
     {
-        sprintf(buff, "%s\t\t%d\t%s",
+        if (temp->state == READY)
+        {
+            state_text = "READY";
+        }
+        else if (temp->state == RUNNING)
+        {
+            state_text = "RUNNING";
+        }
+        else if (temp->state == BLOCKED)
+        {
+            state_text = "BLOCKED";
+        }
+        else
+        {
+            state_text = "DEAD";
+        }
+
+        sprintf(buff, " %s\t\t%d\t%s",
                 temp->task_name.c_str(),
                 temp->task_id,
-                state_to_string(temp->state).c_str());
+                state_text);
         out += buff;
 
         if (temp == current_task)
@@ -417,21 +341,24 @@ std::string scheduler::dump_to_string()
             out += " <-- CURRENT PROCESS";
         }
 
+        if (level > 1)
+        {
+            sprintf(buff, " [work=%d]", temp->work_counter);
+            out += buff;
+        }
+
         out += "\n";
         temp = temp->next;
     }
     while (temp != head);
 
-    out += "----------------------------------------------\n";
+    out += " ----------------------------------------------\n";
 
     pthread_mutex_unlock(&sched_lock);
-    return out;
-}
-
-void scheduler::dump()
-{
-    std::string text = dump_to_string();
-    write_log(text.c_str());
+    if (log_win != NULL)
+    {
+        write_window(log_win, out.c_str());
+    }
 }
 
 void scheduler::kill_task(int the_taskid)
@@ -443,31 +370,48 @@ void scheduler::kill_task(int the_taskid)
     if (task == NULL)
     {
         char buff[256];
-        sprintf(buff, "kill_task FAILED: Task %d not found.\n", the_taskid);
-        write_log(buff);
+        sprintf(buff, " kill_task FAILED: Task %d not found.\n", the_taskid);
+        if (log_win != NULL)
+        {
+            write_window(log_win, buff);
+        }
         pthread_mutex_unlock(&sched_lock);
         return;
     }
 
     char buff[256];
-    sprintf(buff, "Killing task # %d\n", the_taskid);
-    write_log(buff);
+    sprintf(buff, " Killing task # %d\n", the_taskid);
+    if (log_win != NULL)
+    {
+        write_window(log_win, buff);
+    }
+
     task->kill_signal = true;
     task->state = DEAD;
-    pthread_cond_signal(&task->run_cond);
 
-    // If we killed the running task, hand off CPU to the next READY task.
     if (task == current_task)
     {
-        tcb *next_task = find_next_ready_task(current_task);
-        if (next_task != NULL)
+        bool found_next = false;
+        tcb *temp = current_task->next;
+
+        while (temp != current_task)
         {
-            switch_to_task(next_task);
-            pthread_mutex_unlock(&sched_lock);
-            return;
+            if (temp->state == READY)
+            {
+                current_task = temp;
+                current_task->start_time = clock();
+                current_task->state = RUNNING;
+                found_next = true;
+                break;
+            }
+
+            temp = temp->next;
         }
 
-        current_task = NULL;
+        if (!found_next)
+        {
+            current_task = NULL;
+        }
     }
 
     pthread_mutex_unlock(&sched_lock);
@@ -479,21 +423,75 @@ void scheduler::garbage_collect()
 
     if (head == NULL)
     {
-        write_log("No tasks to collect.\n");
+        if (log_win != NULL)
+        {
+            write_window(log_win, " No tasks to collect.\n");
+        }
         pthread_mutex_unlock(&sched_lock);
         return;
     }
 
-    write_log("Running garbage collector...\n");
-    remove_head_dead_tasks();
-
-    if (head == NULL)
+    if (log_win != NULL)
     {
-        pthread_mutex_unlock(&sched_lock);
-        return;
+        write_window(log_win, " Running garbage collector...\n");
     }
 
-    remove_internal_dead_tasks();
+    while (head != NULL && head->state == DEAD)
+    {
+        if (head->next == head)
+        {
+            head = NULL;
+            current_task = NULL;
+            total_tasks--;
+            pthread_mutex_unlock(&sched_lock);
+            return;
+        }
+
+        tcb *last = head;
+        while (last->next != head)
+        {
+            last = last->next;
+        }
+
+        tcb *dead_task = head;
+        head = head->next;
+        last->next = head;
+
+        if (current_task == dead_task)
+        {
+            current_task = head;
+        }
+
+        total_tasks--;
+    }
+
+    if (head != NULL)
+    {
+        tcb *prev = head;
+        tcb *temp = head->next;
+
+        while (temp != head)
+        {
+            if (temp->state == DEAD)
+            {
+                tcb *dead_task = temp;
+                prev->next = temp->next;
+                temp = temp->next;
+
+                if (current_task == dead_task)
+                {
+                    current_task = prev;
+                }
+
+                total_tasks--;
+            }
+            else
+            {
+                prev = temp;
+                temp = temp->next;
+            }
+        }
+    }
 
     pthread_mutex_unlock(&sched_lock);
 }

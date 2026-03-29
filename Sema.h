@@ -15,16 +15,17 @@ private:
 
     Queue<int> sema_queue;
     scheduler *sched_ptr;
+    WINDOW *log_win;
 
 public:
     semaphore(int starting_value, std::string name, scheduler *theScheduler);
     ~semaphore();
+    void set_log_window(WINDOW *win);
 
     bool down(int taskID);
     void up();
 
     void dump(int level);
-    std::string dump_to_string(int level);
 };
 
 #endif

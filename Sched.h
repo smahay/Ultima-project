@@ -7,7 +7,7 @@
 #include <pthread.h>
 #include <ncurses.h>
 
-void write_log(const char *text);
+void write_window(WINDOW * Win, const char* text);
 
 enum TaskState
 {
@@ -16,8 +16,6 @@ enum TaskState
     BLOCKED,
     DEAD
 };
-
-std::string state_to_string(TaskState state);
 
 struct tcb
 {
@@ -30,8 +28,6 @@ struct tcb
     bool kill_signal;
     int work_counter;
 
-    pthread_cond_t run_cond;
-
     tcb *next;
 };
 
@@ -43,12 +39,8 @@ class scheduler
         int current_quantum;
         int next_available_task_id;
         int total_tasks;
-        pthread_mutex_t sched_lock;
-
-        tcb *find_next_ready_task(tcb *start_task);
-        void switch_to_task(tcb *next_task);
-        void remove_head_dead_tasks();
-        void remove_internal_dead_tasks();
+        WINDOW *log_win;
+        pthread_mutex_t sched_lock = PTHREAD_MUTEX_INITIALIZER;
 
     public:
         scheduler();
@@ -56,6 +48,7 @@ class scheduler
 
         void set_quantum(long quantum);
         long get_quantum();
+        void set_log_window(WINDOW *win);
 
         tcb *find_task(int the_taskid);
         void set_state(int the_taskid, TaskState the_state);
@@ -70,11 +63,9 @@ class scheduler
         void kill_task(int the_taskid);
         void garbage_collect();
 
-        void dump();
-        std::string dump_to_string();
+        void dump(int level = 1);
 
         void wait_until_running(tcb *task);
-        void wake_task(tcb *task);
 };
 
 #endif

@@ -1,205 +1,114 @@
 #include <iostream>
-#include <cstdio>
-#include <cstdlib>
-#include <unistd.h>
 #include <pthread.h>
+#include <assert.h>
+#include <time.h>
+#include <unistd.h>
 #include <ncurses.h>
+#include <stdarg.h>
+#include <termios.h>
+#include <fcntl.h>
+#include <cstdio>
 #include "Sched.h"
 #include "Sema.h"
 
 using namespace std;
 
-pthread_mutex_t screen_lock = PTHREAD_MUTEX_INITIALIZER;
-WINDOW *global_log_win = NULL;
+pthread_mutex_t myMutex = PTHREAD_MUTEX_INITIALIZER;
 
-void get_content_bounds(WINDOW *Win, int &top, int &left, int &bottom, int &right)
+void display_screen_data();
+WINDOW *create_window(int height, int width, int starty, int startx);
+void write_window(WINDOW * Win, const char* text);
+void write_window(WINDOW * Win, int x, int y, const char* text);
+void display_help(WINDOW * Win);
+void *perform_simple_output(void *arguments);
+
+struct thread_data
 {
-    int max_y = 0;
-    int max_x = 0;
-    getmaxyx(Win, max_y, max_x);
+    int thread_no;
+    int thread_state;
+    WINDOW *thread_win;
+    WINDOW *resource_win;
+    WINDOW *log_win;
+    bool kill_signal;
+    int sleep_time;
+    int thread_results;
 
-    top = 1;
-    left = 1;
-    bottom = max_y - 2;
-    right = max_x - 2;
-}
+    scheduler *sched;
+    semaphore *sem;
+    tcb *task;
+};
 
-int clamp_value(int value, int low, int high)
+void display_screen_data()
 {
-    if (value < low)
-    {
-        return low;
-    }
-    if (value > high)
-    {
-        return high;
-    }
-    return value;
-}
+    int Y;
+    int X;
+    int Max_X;
+    int Max_Y;
 
-void advance_cursor(WINDOW *Win, int top, int left, int bottom, int &y, int &x)
-{
-    if (y >= bottom)
-    {
-        wscrl(Win, 1);
-        box(Win, 0, 0);
-        y = bottom;
-    }
-    else
-    {
-        y++;
-    }
-    x = left;
-}
-
-void append_window_text_locked(WINDOW *Win, const char *text)
-{
-    if (Win == NULL || text == NULL)
-    {
-        return;
-    }
-
-    int top = 0;
-    int left = 0;
-    int bottom = 0;
-    int right = 0;
-    get_content_bounds(Win, top, left, bottom, right);
-
-    if (bottom < top || right < left)
-    {
-        return;
-    }
-
-    int row = 0;
-    int col = 0;
-    getyx(Win, row, col);
-
-    // Keep cursor inside window content area.
-    if (row < top || row > bottom || col < left || col > right)
-    {
-        row = top;
-        col = left;
-    }
-
-    for (const char *cursor = text; *cursor != '\0'; ++cursor)
-    {
-        const char ch = *cursor;
-
-        if (ch == '\r')
-        {
-            continue;
-        }
-
-        if (ch == '\n')
-        {
-            advance_cursor(Win, top, left, bottom, row, col);
-            continue;
-        }
-
-        // Wrap line when we run out of columns.
-        if (col > right)
-        {
-            advance_cursor(Win, top, left, bottom, row, col);
-        }
-
-        mvwaddch(Win, row, col, ch);
-        col++;
-    }
-
-    if (col > right)
-    {
-        advance_cursor(Win, top, left, bottom, row, col);
-    }
-
-    wmove(Win, row, col);
-    wrefresh(Win);
+    getmaxyx(stdscr, Max_Y, Max_X);
+    getmaxyx(stdscr, Y, X);
+    refresh();
 }
 
 WINDOW *create_window(int height, int width, int starty, int startx)
 {
+    pthread_mutex_lock(&myMutex);
+
     WINDOW *Win = newwin(height, width, starty, startx);
-    if (Win == NULL)
-    {
-        return NULL;
-    }
 
-    if (height >= 3 && width >= 3)
-    {
-        wsetscrreg(Win, 1, height - 2);
-        scrollok(Win, TRUE);
-        wmove(Win, 1, 1);
-    }
-
+    scrollok(Win, TRUE);
+    scroll(Win);
     box(Win, 0, 0);
     wrefresh(Win);
+
+    pthread_mutex_unlock(&myMutex);
     return Win;
 }
 
-void write_window(WINDOW *Win, const char *text)
+void write_window(WINDOW * Win, const char* text)
 {
-    pthread_mutex_lock(&screen_lock);
-    append_window_text_locked(Win, text);
-    pthread_mutex_unlock(&screen_lock);
-}
-
-void write_window(WINDOW *Win, int x, int y, const char *text)
-{
-    pthread_mutex_lock(&screen_lock);
+    pthread_mutex_lock(&myMutex);
 
     if (Win != NULL && text != NULL)
     {
-        int top = 0;
-        int left = 0;
-        int bottom = 0;
-        int right = 0;
-        get_content_bounds(Win, top, left, bottom, right);
-
-        if (bottom >= top && right >= left)
-        {
-            int draw_y = clamp_value(y, top, bottom);
-            int draw_x = clamp_value(x, left, right);
-
-            const int max_chars = right - draw_x + 1;
-
-            if (max_chars > 0)
-            {
-                mvwaddnstr(Win, draw_y, draw_x, text, max_chars);
-                wmove(Win, draw_y, draw_x);
-                wrefresh(Win);
-            }
-        }
+        wprintw(Win, text);
+        box(Win, 0, 0);
+        wrefresh(Win);
     }
 
-    pthread_mutex_unlock(&screen_lock);
+    pthread_mutex_unlock(&myMutex);
 }
 
-void write_log(const char *text)
+void write_window(WINDOW * Win, int x, int y, const char* text)
 {
-    if (global_log_win == NULL || text == NULL)
+    pthread_mutex_lock(&myMutex);
+
+    if (Win != NULL && text != NULL)
     {
-        return;
+        mvwprintw(Win, y, x, text);
+        box(Win, 0, 0);
+        wrefresh(Win);
     }
 
-    write_window(global_log_win, text);
+    pthread_mutex_unlock(&myMutex);
 }
 
-struct worker_args
+void display_help(WINDOW * Win)
 {
-    scheduler *sched;
-    semaphore *sem;
-    tcb *task;
-    WINDOW *resource_win;
-    WINDOW *log_win;
-};
+    wclear(Win);
+    write_window(Win, 1, 1, "...Help...");
+    write_window(Win, 2, 1, "q= Quit");
+}
 
-void *task_worker(void *arguments)
+void *perform_simple_output(void *arguments)
 {
-    worker_args *args = (worker_args *)arguments;
-    scheduler *sched = args->sched;
-    semaphore *sem = args->sem;
-    tcb *task = args->task;
-    WINDOW *resource_win = args->resource_win;
-    WINDOW *log_win = args->log_win;
+    thread_data *td = (thread_data *) arguments;
+
+    scheduler *sched = td->sched;
+    semaphore *sem = td->sem;
+    tcb *task = td->task;
+    WINDOW *resource_win = td->resource_win;
+    WINDOW *log_win = td->log_win;
 
     char buff[256];
 
@@ -212,69 +121,79 @@ void *task_worker(void *arguments)
             break;
         }
 
-        sprintf(buff, "Task %d is running. Iteration %d\n",
+        sprintf(buff, " Task %d running #%d\n",
                 task->task_id, task->work_counter);
         write_window(task->task_win, buff);
         write_window(log_win, buff);
 
         bool got_resource = sem->down(task->task_id);
 
-        write_window(log_win, sem->dump_to_string(1).c_str());
-        write_window(log_win, sched->dump_to_string().c_str());
+        sem->dump(1);
+        sched->dump();
 
         if (!got_resource)
         {
-            sprintf(buff, "Task %d blocked waiting for resource.\n", task->task_id);
+            sprintf(buff, " Task %d waiting resource\n", task->task_id);
             write_window(task->task_win, buff);
             write_window(log_win, buff);
             continue;
         }
 
-        sprintf(buff, "Task %d obtained shared resource.\n", task->task_id);
+        sprintf(buff, " Task %d got resource\n", task->task_id);
         write_window(resource_win, buff);
         write_window(task->task_win, buff);
         write_window(log_win, buff);
 
         sleep(1);
 
-        sprintf(buff, "Task %d releasing shared resource.\n", task->task_id);
+        sprintf(buff, " Task %d released resource\n", task->task_id);
         write_window(resource_win, buff);
         write_window(log_win, buff);
 
         sem->up();
 
-        write_window(log_win, sem->dump_to_string(1).c_str());
-        write_window(log_win, sched->dump_to_string().c_str());
+        sem->dump(1);
+        sched->dump();
 
         task->work_counter++;
 
         if (task->work_counter >= 5)
         {
-            sprintf(buff, "Task %d finished all work.\n", task->task_id);
+            sprintf(buff, " Task %d finished work\n", task->task_id);
             write_window(task->task_win, buff);
             write_window(log_win, buff);
 
             sched->kill_task(task->task_id);
-            write_window(log_win, sched->dump_to_string().c_str());
+            sched->dump();
             break;
         }
 
         sched->yield();
-        write_window(log_win, sched->dump_to_string().c_str());
+        sched->dump();
         sleep(1);
     }
 
-    write_window(task->task_win, "TERMINATED\n");
-    write_window(log_win, "A task terminated.\n");
-    return NULL;
+    write_window(task->task_win, " TERMINATED\n");
+    write_window(log_win, " A task terminated.\n");
+
+    return(NULL);
 }
 
 int main()
 {
+    pthread_t thread_1;
+    pthread_t thread_2;
+    pthread_t thread_3;
+    pthread_t thread_4;
+
+    thread_data thread_args_1;
+    thread_data thread_args_2;
+    thread_data thread_args_3;
+    thread_data thread_args_4;
+
     initscr();
     cbreak();
     noecho();
-    curs_set(0);
 
     WINDOW *heading_win  = create_window(6, 90, 1, 2);
     WINDOW *resource_win = create_window(10, 50, 8, 2);
@@ -285,46 +204,95 @@ int main()
     WINDOW *log_win      = create_window(12, 90, 30, 2);
 
     write_window(heading_win, 2, 1, "ULTIMA 2.0 - Phase 1 Scheduler and Semaphore");
-    write_window(heading_win, 2, 2, "pthread + ncurses baseline");
+    write_window(heading_win, 2, 2, "by Shivansh Mahay and Moises Navarro");
     write_window(resource_win, 2, 1, "Shared Resource Window");
     write_window(log_win, 2, 1, "Log Window");
 
     scheduler swapper;
     semaphore resource1_sema(1, "resource1", &swapper);
-    global_log_win = log_win;
+    swapper.set_log_window(log_win);
+    resource1_sema.set_log_window(log_win);
 
     tcb *t1 = swapper.create_task("Task1", task1_win);
     tcb *t2 = swapper.create_task("Task2", task2_win);
     tcb *t3 = swapper.create_task("Task3", task3_win);
     tcb *t4 = swapper.create_task("Task4", task4_win);
 
-    worker_args a1{&swapper, &resource1_sema, t1, resource_win, log_win};
-    worker_args a2{&swapper, &resource1_sema, t2, resource_win, log_win};
-    worker_args a3{&swapper, &resource1_sema, t3, resource_win, log_win};
-    worker_args a4{&swapper, &resource1_sema, t4, resource_win, log_win};
+    thread_args_1.thread_no = 1;
+    thread_args_1.thread_state = RUNNING;
+    thread_args_1.thread_win = task1_win;
+    thread_args_1.resource_win = resource_win;
+    thread_args_1.log_win = log_win;
+    thread_args_1.kill_signal = false;
+    thread_args_1.sleep_time = 0;
+    thread_args_1.thread_results = 0;
+    thread_args_1.sched = &swapper;
+    thread_args_1.sem = &resource1_sema;
+    thread_args_1.task = t1;
 
-    pthread_create(&t1->thread, NULL, task_worker, &a1);
-    pthread_create(&t2->thread, NULL, task_worker, &a2);
-    pthread_create(&t3->thread, NULL, task_worker, &a3);
-    pthread_create(&t4->thread, NULL, task_worker, &a4);
+    thread_args_2.thread_no = 2;
+    thread_args_2.thread_state = RUNNING;
+    thread_args_2.thread_win = task2_win;
+    thread_args_2.resource_win = resource_win;
+    thread_args_2.log_win = log_win;
+    thread_args_2.kill_signal = false;
+    thread_args_2.sleep_time = 0;
+    thread_args_2.thread_results = 0;
+    thread_args_2.sched = &swapper;
+    thread_args_2.sem = &resource1_sema;
+    thread_args_2.task = t2;
 
-    write_window(log_win, swapper.dump_to_string().c_str());
-    write_window(log_win, resource1_sema.dump_to_string(1).c_str());
+    thread_args_3.thread_no = 3;
+    thread_args_3.thread_state = RUNNING;
+    thread_args_3.thread_win = task3_win;
+    thread_args_3.resource_win = resource_win;
+    thread_args_3.log_win = log_win;
+    thread_args_3.kill_signal = false;
+    thread_args_3.sleep_time = 0;
+    thread_args_3.thread_results = 0;
+    thread_args_3.sched = &swapper;
+    thread_args_3.sem = &resource1_sema;
+    thread_args_3.task = t3;
+
+    thread_args_4.thread_no = 4;
+    thread_args_4.thread_state = RUNNING;
+    thread_args_4.thread_win = task4_win;
+    thread_args_4.resource_win = resource_win;
+    thread_args_4.log_win = log_win;
+    thread_args_4.kill_signal = false;
+    thread_args_4.sleep_time = 0;
+    thread_args_4.thread_results = 0;
+    thread_args_4.sched = &swapper;
+    thread_args_4.sem = &resource1_sema;
+    thread_args_4.task = t4;
+
+    pthread_create(&thread_1, NULL, perform_simple_output, &thread_args_1);
+    pthread_create(&thread_2, NULL, perform_simple_output, &thread_args_2);
+    pthread_create(&thread_3, NULL, perform_simple_output, &thread_args_3);
+    pthread_create(&thread_4, NULL, perform_simple_output, &thread_args_4);
+
+    t1->thread = thread_1;
+    t2->thread = thread_2;
+    t3->thread = thread_3;
+    t4->thread = thread_4;
+
+    swapper.dump();
+    resource1_sema.dump(1);
 
     swapper.start();
 
-    pthread_join(t1->thread, NULL);
-    pthread_join(t2->thread, NULL);
-    pthread_join(t3->thread, NULL);
-    pthread_join(t4->thread, NULL);
+    pthread_join(thread_1, NULL);
+    pthread_join(thread_2, NULL);
+    pthread_join(thread_3, NULL);
+    pthread_join(thread_4, NULL);
 
     write_window(log_win, "All worker threads joined.\n");
-    write_window(log_win, swapper.dump_to_string().c_str());
-    write_window(log_win, resource1_sema.dump_to_string(1).c_str());
+    swapper.dump();
+    resource1_sema.dump(1);
 
     swapper.garbage_collect();
     write_window(log_win, "Running garbage collector...\n");
-    write_window(log_win, swapper.dump_to_string().c_str());
+    swapper.dump();
 
     write_window(resource_win, "All tasks completed. Press any key to exit.\n");
     wgetch(resource_win);

@@ -4,6 +4,7 @@
 #define QUEUE_H
 
 #include <iostream>
+#include <string>
 using namespace std;
 
 template <class T>
@@ -57,7 +58,6 @@ public:
             exit(1);
         }
 
-        Node* temp = frontPtr;
         T value = frontPtr->data;
         frontPtr = frontPtr->next;
 
@@ -66,7 +66,6 @@ public:
             rearPtr = nullptr;
         }
 
-        delete temp;
         return value;
     }
 
@@ -85,23 +84,28 @@ public:
         }
         cout << endl;
     }
-    std::string to_string() const
+
+    std::string to_string()
     {
-        std::string result;
+        std::string out;
         Node* current = frontPtr;
 
         while (current != nullptr)
         {
-            result += std::to_string(current->data) + " ";
+            out += std::to_string(current->data);
+            if (current->next != nullptr)
+            {
+                out += "-->";
+            }
             current = current->next;
         }
 
-        if (result.empty())
+        if (out.empty())
         {
-            result = "EMPTY";
+            out = "EMPTY";
         }
 
-        return result;
+        return out;
     }
 };
 
