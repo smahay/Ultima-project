@@ -8,15 +8,22 @@
 
 using namespace std;
 
+// Binary semaphore.
 class semaphore
 {
 private:
+    // Resource name.
     string resource_name;
+    // 1 free, 0 busy.
     int sema_value;
+    // Current owner id.
     int lucky_task;
 
+    // Wait queue.
     Queue<int> sema_queue;
+    // Scheduler link.
     scheduler *sched_ptr;
+    // Log window.
     WINDOW *log_win;
 
 public:

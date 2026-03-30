@@ -3,6 +3,7 @@
 
 using namespace std;
 
+// Constructor.
 semaphore::semaphore(int starting_value, string name, scheduler *theScheduler)
 {
     sema_value = starting_value;
@@ -16,13 +17,16 @@ semaphore::~semaphore()
 {
 }
 
+// Set log window.
 void semaphore::set_log_window(WINDOW *win)
 {
     log_win = win;
 }
 
+// Acquire or block.
 void semaphore::down(int taskID)
 {
+    // Already owner.
     if (taskID == lucky_task)
     {
         if (log_win != NULL)
@@ -36,6 +40,7 @@ void semaphore::down(int taskID)
         return;
     }
 
+    // Acquire resource.
     if (sema_value >= 1)
     {
         sema_value--;
@@ -44,10 +49,12 @@ void semaphore::down(int taskID)
         return;
     }
 
+    // Queue and block.
     sema_queue.En_Q(taskID);
     sched_ptr->set_state(taskID, BLOCKED);
     dump(1);
 
+    // Switch now.
     if (sched_ptr->get_task_id() == taskID)
     {
         sched_ptr->yield();
@@ -56,10 +63,13 @@ void semaphore::down(int taskID)
     dump(1);
 }
 
+// Release or handoff.
 void semaphore::up()
 {
+    // Only owner can up().
     if (sched_ptr->get_task_id() == lucky_task)
     {
+        // No waiters.
         if (sema_queue.isEmpty())
         {
             sema_value++;
@@ -68,6 +78,7 @@ void semaphore::up()
         }
         else
         {
+            // Wake next waiter.
             int task_id = sema_queue.De_Q();
             sched_ptr->set_state(task_id, READY);
             if (log_win != NULL)
@@ -80,6 +91,7 @@ void semaphore::up()
             lucky_task = task_id;
             dump(1);
 
+            // Yield after handoff.
             sched_ptr->yield();
             dump(1);
         }
@@ -97,6 +109,7 @@ void semaphore::up()
     }
 }
 
+// Print semaphore info.
 void semaphore::dump(int level)
 {
     if (log_win == NULL)

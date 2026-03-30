@@ -4,6 +4,7 @@
 
 using namespace std;
 
+// Init table.
 scheduler::scheduler(int table_size)
 {
     current_task = -1;
@@ -32,6 +33,7 @@ scheduler::scheduler(int table_size)
     }
 }
 
+// Reset fields.
 scheduler::~scheduler()
 {
     pthread_mutex_lock(&sched_lock);
@@ -42,21 +44,25 @@ scheduler::~scheduler()
     pthread_mutex_unlock(&sched_lock);
 }
 
+// Set quantum.
 void scheduler::set_quantum(long quantum)
 {
     current_quantum = quantum;
 }
 
+// Get quantum.
 long scheduler::get_quantum()
 {
     return current_quantum;
 }
 
+// Set log window.
 void scheduler::set_log_window(WINDOW *win)
 {
     log_win = win;
 }
 
+// Find by id.
 tcb *scheduler::find_task(int the_taskid)
 {
     if (the_taskid < 0)
@@ -75,6 +81,7 @@ tcb *scheduler::find_task(int the_taskid)
     return NULL;
 }
 
+// Set state.
 void scheduler::set_state(int the_taskid, string the_state)
 {
     pthread_mutex_lock(&sched_lock);
@@ -88,6 +95,7 @@ void scheduler::set_state(int the_taskid, string the_state)
     pthread_mutex_unlock(&sched_lock);
 }
 
+// Get state.
 string scheduler::get_state(int the_taskid)
 {
     pthread_mutex_lock(&sched_lock);
@@ -104,6 +112,7 @@ string scheduler::get_state(int the_taskid)
     return result;
 }
 
+// Current index.
 int scheduler::get_task_id()
 {
     pthread_mutex_lock(&sched_lock);
@@ -112,6 +121,7 @@ int scheduler::get_task_id()
     return result;
 }
 
+// Current task ptr.
 tcb *scheduler::get_current_task()
 {
     pthread_mutex_lock(&sched_lock);
@@ -127,10 +137,12 @@ tcb *scheduler::get_current_task()
     return result;
 }
 
+// Add task.
 tcb *scheduler::create_task(const string &task_name, WINDOW *task_win)
 {
     pthread_mutex_lock(&sched_lock);
 
+    // Capacity check.
     if (next_available_task_id >= max_tasks)
     {
         if (log_win != NULL)
@@ -146,6 +158,7 @@ tcb *scheduler::create_task(const string &task_name, WINDOW *task_win)
 
     int idx = next_available_task_id;
 
+    // Init new slot.
     task_table[idx].task_id = idx;
     task_table[idx].task_name = task_name;
     task_table[idx].state = READY;
@@ -167,6 +180,7 @@ tcb *scheduler::create_task(const string &task_name, WINDOW *task_win)
     return &task_table[idx];
 }
 
+// Start scheduler.
 void scheduler::start()
 {
     pthread_mutex_lock(&sched_lock);
@@ -201,6 +215,7 @@ void scheduler::start()
     pthread_mutex_unlock(&sched_lock);
 }
 
+// Wait until RUNNING.
 void scheduler::wait_until_running(tcb *task)
 {
     while (true)
@@ -224,6 +239,7 @@ void scheduler::wait_until_running(tcb *task)
     }
 }
 
+// Round-robin switch.
 void scheduler::yield()
 {
     pthread_mutex_lock(&sched_lock);
@@ -243,6 +259,7 @@ void scheduler::yield()
         write_window(log_win, buff);
     }
 
+    // Blocked/dead fast path.
     if (task_table[current_task].state == BLOCKED || task_table[current_task].state == DEAD)
     {
         int next_task = (current_task + 1) % next_available_task_id;
@@ -272,6 +289,7 @@ void scheduler::yield()
         return;
     }
 
+    // Time slice used.
     clock_t elapsed_time = clock() - task_table[current_task].start_time;
 
     sprintf(buff, " Task: %d, elapsed_time: %ld\n", current_task, (long) elapsed_time);
@@ -293,6 +311,7 @@ void scheduler::yield()
             task_table[current_task].state = READY;
         }
 
+        // Find next READY.
         int next_task = (current_task + 1) % next_available_task_id;
 
         while (task_table[next_task].state != READY && counter < next_available_task_id - 1)
@@ -333,6 +352,7 @@ void scheduler::yield()
     pthread_mutex_unlock(&sched_lock);
 }
 
+// Print table.
 void scheduler::dump(int level)
 {
     pthread_mutex_lock(&sched_lock);
@@ -392,6 +412,7 @@ void scheduler::dump(int level)
     }
 }
 
+// Kill task.
 void scheduler::kill_task(int the_taskid)
 {
     pthread_mutex_lock(&sched_lock);
@@ -446,6 +467,7 @@ void scheduler::kill_task(int the_taskid)
     pthread_mutex_unlock(&sched_lock);
 }
 
+// Remove DEAD tasks.
 void scheduler::garbage_collect()
 {
     pthread_mutex_lock(&sched_lock);
@@ -468,6 +490,7 @@ void scheduler::garbage_collect()
 
     int write_idx = 0;
 
+    // Pack live tasks.
     for (int read_idx = 0; read_idx < next_available_task_id; read_idx++)
     {
         if (task_table[read_idx].state != DEAD)
@@ -482,6 +505,7 @@ void scheduler::garbage_collect()
         }
     }
 
+    // Clear tail slots.
     for (int i = write_idx; i < max_tasks; i++)
     {
         task_table[i].task_id = -1;

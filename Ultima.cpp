@@ -13,6 +13,7 @@
 
 using namespace std;
 
+// Screen lock.
 pthread_mutex_t myMutex = PTHREAD_MUTEX_INITIALIZER;
 
 void display_screen_data();
@@ -24,6 +25,7 @@ void *perform_simple_output(void *arguments);
 
 struct thread_data
 {
+    // Basic thread data.
     int thread_no;
     WINDOW *thread_win;
     WINDOW *resource_win;
@@ -32,11 +34,13 @@ struct thread_data
     int sleep_time;
     int thread_results;
 
+    // Runtime pointers.
     scheduler *sched;
     semaphore *sem;
     tcb *task;
 };
 
+// Screen probe.
 void display_screen_data()
 {
     int Y;
@@ -49,6 +53,7 @@ void display_screen_data()
     refresh();
 }
 
+// Create boxed window.
 WINDOW *create_window(int height, int width, int starty, int startx)
 {
     pthread_mutex_lock(&myMutex);
@@ -64,6 +69,7 @@ WINDOW *create_window(int height, int width, int starty, int startx)
     return Win;
 }
 
+// Append text.
 void write_window(WINDOW * Win, const char* text)
 {
     pthread_mutex_lock(&myMutex);
@@ -78,6 +84,7 @@ void write_window(WINDOW * Win, const char* text)
     pthread_mutex_unlock(&myMutex);
 }
 
+// Print at x/y.
 void write_window(WINDOW * Win, int x, int y, const char* text)
 {
     pthread_mutex_lock(&myMutex);
@@ -92,6 +99,7 @@ void write_window(WINDOW * Win, int x, int y, const char* text)
     pthread_mutex_unlock(&myMutex);
 }
 
+// Help window.
 void display_help(WINDOW * Win)
 {
     wclear(Win);
@@ -99,6 +107,7 @@ void display_help(WINDOW * Win)
     write_window(Win, 2, 1, "q= Quit");
 }
 
+// Worker loop.
 void *perform_simple_output(void *arguments)
 {
     thread_data *td = (thread_data *) arguments;
@@ -113,6 +122,7 @@ void *perform_simple_output(void *arguments)
 
     while (!task->kill_signal && task->work_counter < 5)
     {
+        // Wait turn.
         sched->wait_until_running(task);
 
         if (task->kill_signal || task->state == DEAD)
@@ -125,6 +135,7 @@ void *perform_simple_output(void *arguments)
         write_window(task->task_win, buff);
         write_window(log_win, buff);
 
+        // Try down().
         sem->down(task->task_id);
 
         sem->dump(1);
@@ -143,6 +154,7 @@ void *perform_simple_output(void *arguments)
         write_window(task->task_win, buff);
         write_window(log_win, buff);
 
+        // Yield while owning.
         sched->yield();
         sched->dump();
         sched->wait_until_running(task);
@@ -158,6 +170,7 @@ void *perform_simple_output(void *arguments)
         write_window(resource_win, buff);
         write_window(log_win, buff);
 
+        // Release the resource.
         sem->up();
 
         sem->dump(1);
@@ -189,6 +202,7 @@ void *perform_simple_output(void *arguments)
 
 int main()
 {
+    // Thread handles.
     pthread_t thread_1;
     pthread_t thread_2;
     pthread_t thread_3;
@@ -199,6 +213,7 @@ int main()
     thread_data thread_args_3;
     thread_data thread_args_4;
 
+    // Ncurses initialization.
     initscr();
     cbreak();
     noecho();
@@ -229,6 +244,7 @@ int main()
     swapper.set_log_window(log_win);
     resource1_sema.set_log_window(log_win);
 
+    // Creating the tasks.
     tcb *t1 = swapper.create_task("Task1", task1_win);
     tcb *t2 = swapper.create_task("Task2", task2_win);
     tcb *t3 = swapper.create_task("Task3", task3_win);
@@ -278,6 +294,7 @@ int main()
     thread_args_4.sem = &resource1_sema;
     thread_args_4.task = t4;
 
+    // Start threads.
     pthread_create(&thread_1, NULL, perform_simple_output, &thread_args_1);
     pthread_create(&thread_2, NULL, perform_simple_output, &thread_args_2);
     pthread_create(&thread_3, NULL, perform_simple_output, &thread_args_3);
@@ -291,8 +308,10 @@ int main()
     swapper.dump();
     resource1_sema.dump(1);
 
+    // Start scheduling.
     swapper.start();
 
+    // Join threads.
     pthread_join(thread_1, NULL);
     pthread_join(thread_2, NULL);
     pthread_join(thread_3, NULL);

@@ -1,5 +1,3 @@
-//This is Queue.h
-
 #ifndef QUEUE_H
 #define QUEUE_H
 
@@ -11,12 +9,14 @@ template <class T>
 class Queue
 {
 private:
+    // Queue node.
     struct Node
     {
         T data;
         Node* next;
     };
 
+    // Front/rear pointers.
     Node* frontPtr;
     Node* rearPtr;
 
@@ -37,6 +37,7 @@ public:
 
     void En_Q(T value)
     {
+        // Enqueue at rear.
         Node* newNode = new Node{value, nullptr};
 
         if (rearPtr == nullptr)
@@ -52,6 +53,7 @@ public:
 
     T De_Q()
     {
+        // Dequeue from front.
         if (isEmpty())
         {
             cout << "Queue is empty!" << endl;
@@ -87,6 +89,7 @@ public:
 
     std::string to_string()
     {
+        // For log output.
         std::string out;
         Node* current = frontPtr;
 

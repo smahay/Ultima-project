@@ -9,13 +9,16 @@
 
 using namespace std;
 
+// Shared window writer.
 void write_window(WINDOW * Win, const char* text);
 
+// Task states.
 const string READY = "READY";
 const string RUNNING = "RUNNING";
 const string BLOCKED = "BLOCKED";
 const string DEAD = "DEAD";
 
+// Task record.
 struct tcb
 {
     int task_id;
@@ -31,12 +34,19 @@ struct tcb
 class scheduler
 {
     private:
+        // Running index.
         int current_task;
+        // Time slice.
         long current_quantum;
+        // Active slots.
         int next_available_task_id;
+        // Table capacity.
         int max_tasks;
+        // Dynamic table.
         tcb *task_table;
+        // Log window.
         WINDOW *log_win;
+        // Scheduler lock.
         pthread_mutex_t sched_lock = PTHREAD_MUTEX_INITIALIZER;
 
     public:
