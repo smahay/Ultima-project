@@ -3,7 +3,7 @@ CXXFLAGS = -std=c++17 -Wall -pthread
 LIBS = -lncurses
 TARGET = ultima
 
-SRCS = Ultima.cpp Sched.cpp Sema.cpp
+SRCS = Ultima.cpp Sched.cpp Sema.cpp Ipc.cpp
 OBJS = $(SRCS:.cpp=.o)
 
 all: $(TARGET)

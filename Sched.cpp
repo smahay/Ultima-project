@@ -4,6 +4,21 @@
 
 using namespace std;
 
+namespace
+{
+    void reset_task_slot(tcb &task)
+    {
+        task.task_id = -1;
+        task.task_name = "";
+        task.state = DEAD;
+        task.start_time = 0;
+        task.thread = 0;
+        task.task_win = NULL;
+        task.kill_signal = false;
+        task.work_counter = 0;
+    }
+}
+
 // Init table.
 scheduler::scheduler(int table_size)
 {
@@ -22,14 +37,7 @@ scheduler::scheduler(int table_size)
 
     for (int i = 0; i < max_tasks; i++)
     {
-        task_table[i].task_id = -1;
-        task_table[i].task_name = "";
-        task_table[i].state = DEAD;
-        task_table[i].start_time = 0;
-        task_table[i].thread = 0;
-        task_table[i].task_win = NULL;
-        task_table[i].kill_signal = false;
-        task_table[i].work_counter = 0;
+        reset_task_slot(task_table[i]);
     }
 }
 
@@ -37,6 +45,7 @@ scheduler::scheduler(int table_size)
 scheduler::~scheduler()
 {
     pthread_mutex_lock(&sched_lock);
+    delete[] task_table;
     current_task = -1;
     next_available_task_id = 0;
     max_tasks = 0;
@@ -148,7 +157,9 @@ tcb *scheduler::create_task(const string &task_name, WINDOW *task_win)
         if (log_win != NULL)
         {
             char buff[256];
-            sprintf(buff, " Create_task() FAILED: Available tasks exceeded. MAX_TASKS = %d\n", max_tasks);
+            snprintf(buff, sizeof(buff),
+                     " Create_task() FAILED: Available tasks exceeded. MAX_TASKS = %d\n",
+                     max_tasks);
             write_window(log_win, buff);
         }
 
@@ -170,7 +181,7 @@ tcb *scheduler::create_task(const string &task_name, WINDOW *task_win)
     if (log_win != NULL)
     {
         char buff[256];
-        sprintf(buff, " Creating task # %d (%s)\n", idx, task_name.c_str());
+        snprintf(buff, sizeof(buff), " Creating task # %d (%s)\n", idx, task_name.c_str());
         write_window(log_win, buff);
     }
 
@@ -253,7 +264,7 @@ void scheduler::yield()
     int counter = 0;
     char buff[256];
 
-    sprintf(buff, " Current Task # %d is trying to yield\n", current_task);
+    snprintf(buff, sizeof(buff), " Current Task # %d is trying to yield\n", current_task);
     if (log_win != NULL)
     {
         write_window(log_win, buff);
@@ -292,60 +303,49 @@ void scheduler::yield()
     // Time slice used.
     clock_t elapsed_time = clock() - task_table[current_task].start_time;
 
-    sprintf(buff, " Task: %d, elapsed_time: %ld\n", current_task, (long) elapsed_time);
+    snprintf(buff, sizeof(buff), " Task: %d, elapsed_time: %ld\n", current_task, (long) elapsed_time);
     if (log_win != NULL)
     {
         write_window(log_win, buff);
     }
 
-    sprintf(buff, " Current Quantum: %ld\n", current_quantum);
+    snprintf(buff, sizeof(buff), " Current Quantum: %ld\n", current_quantum);
     if (log_win != NULL)
     {
         write_window(log_win, buff);
     }
 
-    if (elapsed_time >= current_quantum)
+    if (task_table[current_task].state == RUNNING)
     {
-        if (task_table[current_task].state == RUNNING)
-        {
-            task_table[current_task].state = READY;
-        }
+        task_table[current_task].state = READY;
+    }
 
-        // Find next READY.
-        int next_task = (current_task + 1) % next_available_task_id;
+    // Find next READY.
+    int next_task = (current_task + 1) % next_available_task_id;
 
-        while (task_table[next_task].state != READY && counter < next_available_task_id - 1)
-        {
-            next_task = (next_task + 1) % next_available_task_id;
-            counter++;
-        }
+    while (task_table[next_task].state != READY && counter < next_available_task_id - 1)
+    {
+        next_task = (next_task + 1) % next_available_task_id;
+        counter++;
+    }
 
-        if (counter < next_available_task_id && task_table[next_task].state == READY)
-        {
-            current_task = next_task;
-            task_table[current_task].start_time = clock();
-            task_table[current_task].state = RUNNING;
+    if (counter < next_available_task_id && task_table[next_task].state == READY)
+    {
+        current_task = next_task;
+        task_table[current_task].start_time = clock();
+        task_table[current_task].state = RUNNING;
 
-            sprintf(buff, " Started Running task # %d\n", current_task);
-            if (log_win != NULL)
-            {
-                write_window(log_win, buff);
-            }
-        }
-        else
+        snprintf(buff, sizeof(buff), " Started Running task # %d\n", current_task);
+        if (log_win != NULL)
         {
-            if (log_win != NULL)
-            {
-                write_window(log_win, " POSSIBLE DEAD LOCK\n");
-            }
+            write_window(log_win, buff);
         }
     }
     else
     {
-        sprintf(buff, " No Yield! (task: %d still has some quantum left)\n", current_task);
         if (log_win != NULL)
         {
-            write_window(log_win, buff);
+            write_window(log_win, " POSSIBLE DEAD LOCK\n");
         }
     }
 
@@ -361,7 +361,7 @@ void scheduler::dump(int level)
     char buff[256];
 
     out += " ---------------- PROCESS TABLE ---------------\n";
-    sprintf(buff, " Quantum = %ld\n", current_quantum);
+    snprintf(buff, sizeof(buff), " Quantum = %ld\n", current_quantum);
     out += buff;
     out += " Task-Name\tTask-ID\tState\n";
 
@@ -382,10 +382,10 @@ void scheduler::dump(int level)
 
     for (int i = 0; i < next_available_task_id; i++)
     {
-        sprintf(buff, " %s\t\t%d\t%s",
-                task_table[i].task_name.c_str(),
-                task_table[i].task_id,
-                task_table[i].state.c_str());
+        snprintf(buff, sizeof(buff), " %s\t\t%d\t%s",
+                 task_table[i].task_name.c_str(),
+                 task_table[i].task_id,
+                 task_table[i].state.c_str());
         out += buff;
 
         if (i == current_task)
@@ -395,7 +395,7 @@ void scheduler::dump(int level)
 
         if (level > 1)
         {
-            sprintf(buff, " [work=%d]", task_table[i].work_counter);
+            snprintf(buff, sizeof(buff), " [work=%d]", task_table[i].work_counter);
             out += buff;
         }
 
@@ -423,7 +423,7 @@ void scheduler::kill_task(int the_taskid)
         if (log_win != NULL)
         {
             char buff[256];
-            sprintf(buff, " kill_task FAILED: Task %d not found.\n", the_taskid);
+            snprintf(buff, sizeof(buff), " kill_task FAILED: Task %d not found.\n", the_taskid);
             write_window(log_win, buff);
         }
 
@@ -437,7 +437,7 @@ void scheduler::kill_task(int the_taskid)
     if (log_win != NULL)
     {
         char buff[256];
-        sprintf(buff, " Killing task # %d\n", the_taskid);
+        snprintf(buff, sizeof(buff), " Killing task # %d\n", the_taskid);
         write_window(log_win, buff);
     }
 
@@ -508,14 +508,7 @@ void scheduler::garbage_collect()
     // Clear tail slots.
     for (int i = write_idx; i < max_tasks; i++)
     {
-        task_table[i].task_id = -1;
-        task_table[i].task_name = "";
-        task_table[i].state = DEAD;
-        task_table[i].start_time = 0;
-        task_table[i].thread = 0;
-        task_table[i].task_win = NULL;
-        task_table[i].kill_signal = false;
-        task_table[i].work_counter = 0;
+        reset_task_slot(task_table[i]);
     }
 
     next_available_task_id = write_idx;
