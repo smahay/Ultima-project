@@ -1,231 +1,307 @@
 #include "Ipc.h"
-#include <cstdio>
+#include "Queue.h"
+#include "Sched.h"
+#include <pthread.h>
 #include <cstring>
+#include <cstdio>
+#include <ncurses.h>
 
-using namespace std;
+Queue<ipc::Message*> *g_mailboxes = NULL;
+pthread_mutex_t *g_mailbox_locks = NULL;
+int g_mailbox_count = 0;
 
-// Constructor.
-ipc::ipc(int the_max_tasks, scheduler *theScheduler)
+pthread_mutex_t g_setup_lock = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t g_dump_lock = PTHREAD_MUTEX_INITIALIZER;
+
+// Print one IPC line to the ncurses log window, or stdout if no window exists.
+void ipc_output_line(const char *line)
+{
+    if (line == NULL)
+    {
+        return;
+    }
+
+    WINDOW *log_win = get_ipc_log_window();
+    if (log_win != NULL)
+    {
+        write_window(log_win, line);
+        return;
+    }
+
+    printf("%s", line);
+}
+
+// Copy text into a fixed-size buffer.
+void copy_text_safely(char *dest, const char *src, int dest_size)
+{
+    if (dest == NULL || dest_size <= 0)
+    {
+        return;
+    }
+
+    if (src == NULL)
+    {
+        dest[0] = '\0';
+        return;
+    }
+
+    int i = 0;
+    while (i < dest_size - 1 && src[i] != '\0')
+    {
+        dest[i] = src[i];
+        i++;
+    }
+
+    dest[i] = '\0';
+}
+
+// Return text length up to max_len.
+int text_length_with_limit(const char *text, int max_len)
+{
+    if (text == NULL)
+    {
+        return 0;
+    }
+
+    int count = 0;
+    while (count < max_len && text[count] != '\0')
+    {
+        count++;
+    }
+
+    return count;
+}
+
+// Fill message type ID and readable label.
+void set_message_type(ipc::Message_Type *msg_type, int type_id)
+{
+    if (msg_type == NULL)
+    {
+        return;
+    }
+
+    msg_type->Message_Type_Id = type_id;
+
+    if (type_id == 0)
+    {
+        strcpy(msg_type->Message_Type_Description, "TEXT");
+    }
+    else if (type_id == 1)
+    {
+        strcpy(msg_type->Message_Type_Description, "SERVICE");
+    }
+    else if (type_id == 2)
+    {
+        strcpy(msg_type->Message_Type_Description, "NOTIFICATION");
+    }
+    else
+    {
+        strcpy(msg_type->Message_Type_Description, "UNKNOWN");
+    }
+}
+
+// Delete and free every message currently in one mailbox.
+void delete_all_messages_in_mailbox(int task_id)
+{
+    if (g_mailboxes == NULL)
+    {
+        return;
+    }
+
+    if (task_id < 0 || task_id >= g_mailbox_count)
+    {
+        return;
+    }
+
+    while (!g_mailboxes[task_id].isEmpty())
+    {
+        ipc::Message *msg = g_mailboxes[task_id].De_Q();
+        delete msg;
+    }
+}
+
+// Makes sure the mailbox arrays exist and match the current task count.
+int ensure_mailbox_storage(int requested_count)
+{
+    int safe_count = requested_count;
+    if (safe_count <= 0)
+    {
+        safe_count = 1;
+    }
+
+    pthread_mutex_lock(&g_setup_lock);
+
+    if (g_mailboxes != NULL && g_mailbox_locks != NULL && g_mailbox_count == safe_count)
+    {
+        pthread_mutex_unlock(&g_setup_lock);
+        return 1;
+    }
+
+    if (g_mailboxes != NULL && g_mailbox_locks != NULL)
+    {
+        for (int i = 0; i < g_mailbox_count; i++)
+        {
+            pthread_mutex_lock(&g_mailbox_locks[i]);
+            delete_all_messages_in_mailbox(i);
+            pthread_mutex_unlock(&g_mailbox_locks[i]);
+        }
+
+        delete[] g_mailboxes;
+        delete[] g_mailbox_locks;
+        g_mailboxes = NULL;
+        g_mailbox_locks = NULL;
+        g_mailbox_count = 0;
+    }
+
+    g_mailboxes = new Queue<ipc::Message*>[safe_count];
+    g_mailbox_locks = new pthread_mutex_t[safe_count];
+    g_mailbox_count = safe_count;
+
+    pthread_mutex_t starter_lock = PTHREAD_MUTEX_INITIALIZER;
+    for (int i = 0; i < g_mailbox_count; i++)
+    {
+        g_mailbox_locks[i] = starter_lock;
+    }
+
+    pthread_mutex_unlock(&g_setup_lock);
+    return 1;
+}
+
+ipc::ipc(int the_max_tasks)
 {
     max_tasks = the_max_tasks;
-    sched_ptr = theScheduler;
-    log_win = NULL;
-
     if (max_tasks <= 0)
     {
         max_tasks = 1;
     }
 
-    mailboxes = new mailbox[max_tasks];
-
-    for (int i = 0; i < max_tasks; i++)
-    {
-        char buff[64];
-        snprintf(buff, sizeof(buff), "Mailbox_%d", i);
-
-        mailboxes[i].mailbox_sema = new semaphore(1, buff, sched_ptr);
-
-        if (log_win != NULL)
-        {
-            mailboxes[i].mailbox_sema->set_log_window(log_win);
-        }
-    }
+    ensure_mailbox_storage(max_tasks);
 }
 
-// Destructor.
-ipc::~ipc()
+// Send one full message struct into the destination task mailbox.
+int ipc::Message_Send(Message *message)
 {
-    for (int i = 0; i < max_tasks; i++)
-    {
-        while (!mailboxes[i].msg_queue.isEmpty())
-        {
-            Message *temp = mailboxes[i].msg_queue.De_Q();
-            delete temp;
-        }
-
-        delete mailboxes[i].mailbox_sema;
-    }
-
-    delete[] mailboxes;
-}
-
-// Set log window.
-void ipc::set_log_window(WINDOW *win)
-{
-    log_win = win;
-
-    for (int i = 0; i < max_tasks; i++)
-    {
-        mailboxes[i].mailbox_sema->set_log_window(win);
-    }
-}
-
-// Send using full message record.
-int ipc::Message_Send(Message *msg)
-{
-    if (msg == NULL)
+    if (message == NULL)
     {
         return -1;
     }
 
-    int d_id = msg->destination_task_id;
-
-    if (d_id < 0 || d_id >= max_tasks)
+    if (message->Source_Task_Id < 0 || message->Source_Task_Id >= max_tasks)
     {
         return -1;
     }
 
-    if (sched_ptr->find_task(msg->source_task_id) == NULL ||
-        sched_ptr->find_task(msg->destination_task_id) == NULL)
+    if (message->Destination_Task_Id < 0 || message->Destination_Task_Id >= max_tasks)
     {
         return -1;
     }
 
-    Message *new_msg = new Message;
-    new_msg->source_task_id = msg->source_task_id;
-    new_msg->destination_task_id = msg->destination_task_id;
-    new_msg->arrival_time = time(NULL);
-    new_msg->msg_type = msg->msg_type;
-    new_msg->msg_text = msg->msg_text;
-    new_msg->msg_size = new_msg->msg_text.length();
-
-    mailboxes[d_id].mailbox_sema->down(msg->source_task_id);
-
-    if (sched_ptr->get_state(msg->source_task_id) == BLOCKED)
-    {
-        delete new_msg;
-        return -1;
-    }
-
-    mailboxes[d_id].msg_queue.En_Q(new_msg);
-
-    if (log_win != NULL)
-    {
-        char buff[256];
-        snprintf(buff, sizeof(buff),
-                 " Message sent from Task %d to Task %d | Type: %d | Size: %d\n",
-                 new_msg->source_task_id,
-                 new_msg->destination_task_id,
-                 new_msg->msg_type,
-                 new_msg->msg_size);
-        write_window(log_win, buff);
-    }
-
-    mailboxes[d_id].mailbox_sema->up();
-    return 1;
-}
-
-// Overloaded send.
-int ipc::Message_Send(int s_id, int d_id, const char *mess, int mess_type)
-{
-    if (mess == NULL)
+    if (ensure_mailbox_storage(max_tasks) != 1)
     {
         return -1;
     }
 
-    Message temp_msg;
-    temp_msg.source_task_id = s_id;
-    temp_msg.destination_task_id = d_id;
-    temp_msg.arrival_time = time(NULL);
-    temp_msg.msg_type = mess_type;
-    temp_msg.msg_text = mess;
-    temp_msg.msg_size = temp_msg.msg_text.length();
+    Message *new_message = new Message;
+    new_message->Source_Task_Id = message->Source_Task_Id;
+    new_message->Destination_Task_Id = message->Destination_Task_Id;
+    new_message->Message_Arrival_Time = time(NULL);
+    set_message_type(&new_message->Msg_Type, message->Msg_Type.Message_Type_Id);
+    copy_text_safely(new_message->Msg_Text, message->Msg_Text, 33);
+    new_message->Msg_Size = text_length_with_limit(new_message->Msg_Text, 32);
 
-    return Message_Send(&temp_msg);
-}
+    int destination_id = new_message->Destination_Task_Id;
 
-// Receive into full message record.
-int ipc::Message_Receive(int task_id, Message *msg)
-{
-    if (msg == NULL)
-    {
-        return -1;
-    }
-
-    if (task_id < 0 || task_id >= max_tasks)
-    {
-        return -1;
-    }
-
-    if (sched_ptr->find_task(task_id) == NULL)
-    {
-        return -1;
-    }
-
-    if (mailboxes[task_id].msg_queue.isEmpty())
-    {
-        return 0;
-    }
-
-    mailboxes[task_id].mailbox_sema->down(task_id);
-
-    if (sched_ptr->get_state(task_id) == BLOCKED)
-    {
-        return -1;
-    }
-
-    if (mailboxes[task_id].msg_queue.isEmpty())
-    {
-        mailboxes[task_id].mailbox_sema->up();
-        return 0;
-    }
-
-    Message *temp = mailboxes[task_id].msg_queue.De_Q();
-
-    msg->source_task_id = temp->source_task_id;
-    msg->destination_task_id = temp->destination_task_id;
-    msg->arrival_time = temp->arrival_time;
-    msg->msg_type = temp->msg_type;
-    msg->msg_size = temp->msg_size;
-    msg->msg_text = temp->msg_text;
-
-    if (log_win != NULL)
-    {
-        char buff[256];
-        snprintf(buff, sizeof(buff),
-                 " Message received by Task %d from Task %d | Type: %d | Size: %d\n",
-                 msg->destination_task_id,
-                 msg->source_task_id,
-                 msg->msg_type,
-                 msg->msg_size);
-        write_window(log_win, buff);
-    }
-
-    delete temp;
-    mailboxes[task_id].mailbox_sema->up();
+    // Lock mailbox -> enqueue -> unlock mailbox.
+    pthread_mutex_lock(&g_mailbox_locks[destination_id]);
+    g_mailboxes[destination_id].En_Q(new_message);
+    pthread_mutex_unlock(&g_mailbox_locks[destination_id]);
 
     return 1;
 }
 
-// Overloaded receive.
-int ipc::Message_Receive(int task_id, char *mess, int *mess_type)
+// Send message using simple input arguments.
+int ipc::Message_Send(int S_Id, int D_Id, char *Mess, int Mess_Type)
 {
-    if (mess == NULL || mess_type == NULL)
+    if (Mess == NULL)
     {
         return -1;
     }
 
-    Message temp_msg;
-    int result = Message_Receive(task_id, &temp_msg);
+    Message temp_message;
+    temp_message.Source_Task_Id = S_Id;
+    temp_message.Destination_Task_Id = D_Id;
+    temp_message.Message_Arrival_Time = time(NULL);
+    set_message_type(&temp_message.Msg_Type, Mess_Type);
+    copy_text_safely(temp_message.Msg_Text, Mess, 33);
+    temp_message.Msg_Size = text_length_with_limit(temp_message.Msg_Text, 32);
+
+    return Message_Send(&temp_message);
+}
+
+// Receive one message from a task mailbox into a full message struct.
+int ipc::Message_Receive(int Task_Id, Message *message)
+{
+    if (message == NULL)
+    {
+        return -1;
+    }
+
+    if (Task_Id < 0 || Task_Id >= max_tasks)
+    {
+        return -1;
+    }
+
+    if (ensure_mailbox_storage(max_tasks) != 1)
+    {
+        return -1;
+    }
+
+    // Lock mailbox -> dequeue -> unlock mailbox.
+    pthread_mutex_lock(&g_mailbox_locks[Task_Id]);
+
+    if (g_mailboxes[Task_Id].isEmpty())
+    {
+        pthread_mutex_unlock(&g_mailbox_locks[Task_Id]);
+        return 0;
+    }
+
+    Message *stored_message = g_mailboxes[Task_Id].De_Q();
+    *message = *stored_message;
+    delete stored_message;
+
+    pthread_mutex_unlock(&g_mailbox_locks[Task_Id]);
+    return 1;
+}
+
+// Receive only message text and message type ID.
+int ipc::Message_Receive(int Task_Id, char *Mess, int *Mess_Type)
+{
+    if (Mess == NULL || Mess_Type == NULL)
+    {
+        return -1;
+    }
+
+    Message temp_message;
+    int result = Message_Receive(Task_Id, &temp_message);
 
     if (result == 1)
     {
-        strcpy(mess, temp_msg.msg_text.c_str());
-        *mess_type = temp_msg.msg_type;
+        strcpy(Mess, temp_message.Msg_Text);
+        *Mess_Type = temp_message.Msg_Type.Message_Type_Id;
     }
 
     return result;
 }
 
-// Count messages in one mailbox.
-int ipc::Message_Count(int task_id)
+// Count messages in one mailbox without removing them.
+int ipc::Message_Count(int Task_Id)
 {
-    if (task_id < 0 || task_id >= max_tasks)
+    if (Task_Id < 0 || Task_Id >= max_tasks)
     {
         return -1;
     }
 
-    if (sched_ptr->find_task(task_id) == NULL)
+    if (ensure_mailbox_storage(max_tasks) != 1)
     {
         return -1;
     }
@@ -233,161 +309,170 @@ int ipc::Message_Count(int task_id)
     int count = 0;
     Queue<Message*> temp_queue;
 
-    while (!mailboxes[task_id].msg_queue.isEmpty())
+    pthread_mutex_lock(&g_mailbox_locks[Task_Id]);
+
+    while (!g_mailboxes[Task_Id].isEmpty())
     {
-        Message *msg = mailboxes[task_id].msg_queue.De_Q();
+        Message *msg = g_mailboxes[Task_Id].De_Q();
         temp_queue.En_Q(msg);
         count++;
     }
 
     while (!temp_queue.isEmpty())
     {
-        mailboxes[task_id].msg_queue.En_Q(temp_queue.De_Q());
+        g_mailboxes[Task_Id].En_Q(temp_queue.De_Q());
     }
 
+    pthread_mutex_unlock(&g_mailbox_locks[Task_Id]);
     return count;
 }
 
-// Count all messages.
+// Count total messages across all mailboxes without removing them.
 int ipc::Message_Count()
 {
+    if (ensure_mailbox_storage(max_tasks) != 1)
+    {
+        return -1;
+    }
+
     int total = 0;
 
     for (int i = 0; i < max_tasks; i++)
     {
-        if (sched_ptr->find_task(i) != NULL)
+        Queue<Message*> temp_queue;
+
+        pthread_mutex_lock(&g_mailbox_locks[i]);
+
+        while (!g_mailboxes[i].isEmpty())
         {
-            int count = Message_Count(i);
-            if (count > 0)
-            {
-                total += count;
-            }
+            Message *msg = g_mailboxes[i].De_Q();
+            temp_queue.En_Q(msg);
+            total++;
         }
+
+        while (!temp_queue.isEmpty())
+        {
+            g_mailboxes[i].En_Q(temp_queue.De_Q());
+        }
+
+        pthread_mutex_unlock(&g_mailbox_locks[i]);
     }
 
     return total;
 }
 
-// Print one mailbox without deleting.
-void ipc::Message_Print(int task_id)
+// Print one mailbox without removing any messages.
+void ipc::Message_Print(int Task_Id)
 {
-    if (task_id < 0 || task_id >= max_tasks)
+    if (Task_Id < 0 || Task_Id >= max_tasks)
     {
         return;
     }
 
-    if (sched_ptr->find_task(task_id) == NULL)
+    if (ensure_mailbox_storage(max_tasks) != 1)
     {
-        return;
-    }
-
-    if (log_win == NULL)
-    {
-        return;
-    }
-
-    string out;
-    char buff[512];
-
-    snprintf(buff, sizeof(buff), " -------- MAILBOX FOR TASK %d --------\n", task_id);
-    out += buff;
-
-    int count = Message_Count(task_id);
-    snprintf(buff, sizeof(buff), " Message Count: %d\n", count);
-    out += buff;
-
-    if (count == 0)
-    {
-        out += " Mailbox is empty.\n";
-        out += " ------------------------------------\n";
-        write_window(log_win, out.c_str());
         return;
     }
 
     Queue<Message*> temp_queue;
+    int count = 0;
+    char line[256];
 
-    while (!mailboxes[task_id].msg_queue.isEmpty())
+    sprintf(line, " -------- MAILBOX FOR TASK %d --------\n", Task_Id);
+    ipc_output_line(line);
+
+    pthread_mutex_lock(&g_mailbox_locks[Task_Id]);
+
+    while (!g_mailboxes[Task_Id].isEmpty())
     {
-        Message *msg = mailboxes[task_id].msg_queue.De_Q();
-
-        char time_buff[64];
-        struct tm *time_info = localtime(&msg->arrival_time);
-        strftime(time_buff, sizeof(time_buff), "%H:%M:%S", time_info);
-
-        snprintf(buff, sizeof(buff),
-                 " From:%d To:%d Type:%d Size:%d Time:%s Text:%s\n",
-                 msg->source_task_id,
-                 msg->destination_task_id,
-                 msg->msg_type,
-                 msg->msg_size,
-                 time_buff,
-                 msg->msg_text.c_str());
-        out += buff;
-
+        Message *msg = g_mailboxes[Task_Id].De_Q();
         temp_queue.En_Q(msg);
+        count++;
+
+        char time_text[64];
+        struct tm *time_info = localtime(&msg->Message_Arrival_Time);
+
+        if (time_info != NULL)
+        {
+            strftime(time_text, sizeof(time_text), "%H:%M:%S", time_info);
+        }
+        else
+        {
+            strcpy(time_text, "unknown");
+        }
+
+        sprintf(line,
+                " From:%d To:%d Type:%d (%s) Size:%d Time:%s Text:%s\n",
+                msg->Source_Task_Id,
+                msg->Destination_Task_Id,
+                msg->Msg_Type.Message_Type_Id,
+                msg->Msg_Type.Message_Type_Description,
+                msg->Msg_Size,
+                time_text,
+                msg->Msg_Text);
+        ipc_output_line(line);
     }
 
     while (!temp_queue.isEmpty())
     {
-        mailboxes[task_id].msg_queue.En_Q(temp_queue.De_Q());
+        g_mailboxes[Task_Id].En_Q(temp_queue.De_Q());
     }
 
-    out += " ------------------------------------\n";
-    write_window(log_win, out.c_str());
+    pthread_mutex_unlock(&g_mailbox_locks[Task_Id]);
+
+    sprintf(line, " Message Count: %d\n", count);
+    ipc_output_line(line);
+    if (count == 0)
+    {
+        ipc_output_line(" Mailbox is empty.\n");
+    }
+    ipc_output_line(" ------------------------------------\n");
 }
 
-// Delete all messages for one task.
-int ipc::Message_DeleteAll(int task_id)
+// Delete all messages in one mailbox and return how many were deleted.
+int ipc::Message_DeleteAll(int Task_Id)
 {
-    if (task_id < 0 || task_id >= max_tasks)
+    if (Task_Id < 0 || Task_Id >= max_tasks)
     {
         return -1;
     }
 
-    if (sched_ptr->find_task(task_id) == NULL)
+    if (ensure_mailbox_storage(max_tasks) != 1)
     {
         return -1;
     }
 
     int deleted_count = 0;
 
-    while (!mailboxes[task_id].msg_queue.isEmpty())
+    pthread_mutex_lock(&g_mailbox_locks[Task_Id]);
+
+    while (!g_mailboxes[Task_Id].isEmpty())
     {
-        Message *msg = mailboxes[task_id].msg_queue.De_Q();
+        Message *msg = g_mailboxes[Task_Id].De_Q();
         delete msg;
         deleted_count++;
     }
 
-    if (log_win != NULL)
-    {
-        char buff[256];
-        snprintf(buff, sizeof(buff),
-                 " Deleted %d messages from Task %d mailbox\n",
-                 deleted_count,
-                 task_id);
-        write_window(log_win, buff);
-    }
-
+    pthread_mutex_unlock(&g_mailbox_locks[Task_Id]);
     return deleted_count;
 }
 
-// Dump all mailboxes.
+// Print all task mailboxes without removing messages.
 void ipc::ipc_Message_Dump()
 {
-    if (log_win == NULL)
+    if (ensure_mailbox_storage(max_tasks) != 1)
     {
         return;
     }
 
-    write_window(log_win, " ========== IPC MESSAGE DUMP ==========\n");
+    pthread_mutex_lock(&g_dump_lock);
 
+    ipc_output_line(" ========== IPC MESSAGE DUMP ==========\n");
     for (int i = 0; i < max_tasks; i++)
     {
-        if (sched_ptr->find_task(i) != NULL)
-        {
-            Message_Print(i);
-        }
+        Message_Print(i);
     }
+    ipc_output_line(" ======================================\n");
 
-    write_window(log_win, " ======================================\n");
+    pthread_mutex_unlock(&g_dump_lock);
 }

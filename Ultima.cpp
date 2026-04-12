@@ -9,8 +9,16 @@
 
 using namespace std;
 
-// Screen lock.
+// Shared lock for ncurses screen updates.
 pthread_mutex_t myMutex = PTHREAD_MUTEX_INITIALIZER;
+
+WINDOW *ipc_log_window = NULL;
+
+// Return the IPC log window pointer.
+WINDOW *get_ipc_log_window()
+{
+    return ipc_log_window;
+}
 
 WINDOW *create_window(int height, int width, int starty, int startx);
 void write_window(WINDOW * Win, const char* text);
@@ -21,13 +29,12 @@ struct thread_data
 {
     WINDOW *log_win;
 
-    // Runtime pointers.
     scheduler *sched;
     ipc *messenger;
     tcb *task;
 };
 
-// Create boxed window.
+// Create and returns one ncurses window.
 WINDOW *create_window(int height, int width, int starty, int startx)
 {
     pthread_mutex_lock(&myMutex);
@@ -43,7 +50,7 @@ WINDOW *create_window(int height, int width, int starty, int startx)
     return Win;
 }
 
-// Append text.
+// Appends text to a window.
 void write_window(WINDOW * Win, const char* text)
 {
     pthread_mutex_lock(&myMutex);
@@ -58,7 +65,7 @@ void write_window(WINDOW * Win, const char* text)
     pthread_mutex_unlock(&myMutex);
 }
 
-// Print at x/y.
+// Print text at a specific x/y in a window.
 void write_window(WINDOW * Win, int x, int y, const char* text)
 {
     pthread_mutex_lock(&myMutex);
@@ -73,8 +80,7 @@ void write_window(WINDOW * Win, int x, int y, const char* text)
     pthread_mutex_unlock(&myMutex);
 }
 
-// Worker loop.
-
+// send/receive demo messages and update task state.
 void *perform_simple_output(void *arguments)
 {
     thread_data *td = (thread_data *) arguments;
@@ -95,60 +101,86 @@ void *perform_simple_output(void *arguments)
             break;
         }
 
-        snprintf(buff, sizeof(buff), " Task %d running phase 2 step #%d\n",
-                 task->task_id, task->work_counter);
+        sprintf(buff, " Task %d running phase 2 step #%d\n",
+                task->task_id, task->work_counter);
         write_window(task->task_win, buff);
         write_window(log_win, buff);
 
-        // Task 0 acts like the receiver.
         if (task->task_id == 0)
         {
-            Message msg;
+            // Task 0 receives messages.
+            ipc::Message msg;
+
             int result = messenger->Message_Receive(task->task_id, &msg);
 
             if (result == 1)
             {
-                snprintf(buff, sizeof(buff),
-                         " Received from Task %d | Type: %d | Text: %s\n",
-                         msg.source_task_id,
-                         msg.msg_type,
-                         msg.msg_text.c_str());
+                sprintf(buff,
+                        " Received from Task %d | Type: %d (%s) | Text: %s\n",
+                        msg.Source_Task_Id,
+                        msg.Msg_Type.Message_Type_Id,
+                        msg.Msg_Type.Message_Type_Description,
+                        msg.Msg_Text);
                 write_window(task->task_win, buff);
                 write_window(log_win, buff);
             }
-            else
+            else if (result == 0)
             {
                 write_window(task->task_win, " No message available yet.\n");
+            }
+            else
+            {
+                write_window(task->task_win, " Receive returned error (-1).\n");
             }
         }
         else
         {
-            // Other tasks send to Task 0.
-            snprintf(buff, sizeof(buff), " Hello from Task %d", task->task_id);
-            int send_result = messenger->Message_Send(task->task_id, 0, buff, MSG_TEXT);
+            // Other tasks send messages to task 0.
+            char msg_text[64];
+
+            int msg_type_id = 0;
+            if (task->task_id == 1)
+            {
+                msg_type_id = 1;
+            }
+            else if (task->task_id == 2)
+            {
+                msg_type_id = 2;
+            }
+            else
+            {
+                msg_type_id = 0;
+            }
+
+            sprintf(msg_text, "T%d step%d type%d",
+                    task->task_id, task->work_counter, msg_type_id);
+
+            int send_result = messenger->Message_Send(task->task_id, 0, msg_text, msg_type_id);
 
             if (send_result == 1)
             {
-                snprintf(buff, sizeof(buff), " Sent message to Task 0\n");
+                sprintf(buff, " Sent to Task 0 | Type: %d | Text: %s\n",
+                        msg_type_id, msg_text);
                 write_window(task->task_win, buff);
                 write_window(log_win, buff);
             }
             else
             {
-                snprintf(buff, sizeof(buff), " Failed to send message to Task 0\n");
+                sprintf(buff, " Failed to send to Task 0 (result=%d)\n",
+                        send_result);
                 write_window(task->task_win, buff);
                 write_window(log_win, buff);
             }
         }
 
-        //messenger->ipc_Message_Dump();
+        messenger->ipc_Message_Dump();
         sched->dump();
 
         task->work_counter++;
 
         if (task->task_id != 0 && task->work_counter >= 3)
         {
-            snprintf(buff, sizeof(buff), " Task %d finished work\n", task->task_id);
+            sprintf(buff, " Task %d finished work\n", task->task_id);
             write_window(task->task_win, buff);
             write_window(log_win, buff);
 
@@ -159,7 +191,7 @@ void *perform_simple_output(void *arguments)
 
         if (task->task_id == 0 && task->work_counter >= 6)
         {
-            snprintf(buff, sizeof(buff), " Task %d finished work\n", task->task_id);
+            sprintf(buff, " Task %d finished work\n", task->task_id);
             write_window(task->task_win, buff);
             write_window(log_win, buff);
 
@@ -170,6 +202,7 @@ void *perform_simple_output(void *arguments)
 
         sched->yield();
         sched->dump();
+
         sleep(1);
     }
 
@@ -181,24 +214,26 @@ void *perform_simple_output(void *arguments)
 
 int main()
 {
+    char status_buff[256];
+
     const int task_count = 4;
 
-    // Thread handles.
     pthread_t threads[task_count];
     thread_data thread_args[task_count];
 
-    // Ncurses initialization.
     initscr();
     cbreak();
     noecho();
 
-    WINDOW *heading_win  = create_window(6, 90, 1, 2);
-    WINDOW *resource_win = create_window(10, 50, 8, 2);
-    WINDOW *task1_win    = create_window(10, 28, 8, 55);
-    WINDOW *task2_win    = create_window(10, 28, 19, 2);
-    WINDOW *task3_win    = create_window(10, 28, 19, 31);
-    WINDOW *task4_win    = create_window(10, 28, 19, 60);
-    WINDOW *log_win      = create_window(12, 90, 30, 2);
+    WINDOW *heading_win  = create_window(6, 155, 1, 2);
+    WINDOW *resource_win = create_window(10, 60, 8, 2);
+    WINDOW *task1_win    = create_window(10, 90, 8, 65);
+    WINDOW *task2_win    = create_window(10, 50, 19, 2);
+    WINDOW *task3_win    = create_window(10, 50, 19, 55);
+    WINDOW *task4_win    = create_window(10, 50, 19, 107);
+    WINDOW *log_win      = create_window(12, 155, 30, 2);
+
+    ipc_log_window = log_win;
 
     write_window(heading_win, 2, 1, "ULTIMA 2.0 - Phase 2 Message Passing (IPC)");
     write_window(heading_win, 2, 2, "by Shivansh Mahay and Moises Navarro");
@@ -212,19 +247,20 @@ int main()
     task_windows[3] = task4_win;
 
     scheduler swapper(task_count);
+
     semaphore resource1_sema(1, "resource1", &swapper);
-    ipc messenger(task_count, &swapper);
+
+    ipc messenger(task_count);
 
     swapper.set_log_window(log_win);
     resource1_sema.set_log_window(log_win);
-    messenger.set_log_window(log_win);
 
-    // Creating the tasks.
     tcb *tasks[task_count];
+    // Create tasks and thread argument data.
     for (int i = 0; i < task_count; ++i)
     {
         char task_name[16];
-        snprintf(task_name, sizeof(task_name), "Task%d", i + 1);
+        sprintf(task_name, "Task%d", i + 1);
         tasks[i] = swapper.create_task(task_name, task_windows[i]);
 
         thread_args[i].log_win = log_win;
@@ -233,7 +269,6 @@ int main()
         thread_args[i].task = tasks[i];
     }
 
-    // Start threads.
     for (int i = 0; i < task_count; ++i)
     {
         pthread_create(&threads[i], NULL, perform_simple_output, &thread_args[i]);
@@ -244,10 +279,9 @@ int main()
     resource1_sema.dump(1);
     messenger.ipc_Message_Dump();
 
-    // Start scheduling.
     swapper.start();
 
-    // Join threads.
+    // Waiting for all threads.
     for (int i = 0; i < task_count; ++i)
     {
         pthread_join(threads[i], NULL);
@@ -256,6 +290,33 @@ int main()
     write_window(log_win, "All worker threads joined.\n");
     swapper.dump();
     resource1_sema.dump(1);
+    messenger.ipc_Message_Dump();
+
+    // IPC count/delete checking.
+    int total_before_delete = messenger.Message_Count();
+    sprintf(status_buff,
+            " IPC total messages before delete: %d\n",
+            total_before_delete);
+    write_window(log_win, status_buff);
+
+    int task0_before_delete = messenger.Message_Count(0);
+    sprintf(status_buff,
+            " IPC Task 0 message count before delete: %d\n",
+            task0_before_delete);
+    write_window(log_win, status_buff);
+
+    int deleted_from_task0 = messenger.Message_DeleteAll(0);
+    sprintf(status_buff,
+            " IPC deleted from Task 0 mailbox: %d\n",
+            deleted_from_task0);
+    write_window(log_win, status_buff);
+
+    int task0_after_delete = messenger.Message_Count(0);
+    sprintf(status_buff,
+            " IPC Task 0 message count after delete: %d\n",
+            task0_after_delete);
+    write_window(log_win, status_buff);
+
     messenger.ipc_Message_Dump();
 
     swapper.garbage_collect();

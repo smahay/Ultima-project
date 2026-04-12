@@ -9,8 +9,11 @@
 
 using namespace std;
 
-// Shared window writer.
+// window writer.
 void write_window(WINDOW * Win, const char* text);
+
+// returns the ncurses log window used by IPC output.
+WINDOW *get_ipc_log_window();
 
 // Task states.
 const string READY = "READY";
