@@ -32,7 +32,9 @@ void semaphore::down(int taskID)
         if (log_win != NULL)
         {
             char buff[256];
-            sprintf(buff, " Task # %d already owns the resource! Ignore request.\n", lucky_task);
+            snprintf(buff, sizeof(buff),
+                     " Task # %d already owns the resource! Ignore request.\n",
+                     lucky_task);
             write_window(log_win, buff);
         }
 
@@ -84,7 +86,9 @@ void semaphore::up()
             if (log_win != NULL)
             {
                 char buff[256];
-                sprintf(buff, " Unblocking task_id %d and release from the queue\n", task_id);
+                snprintf(buff, sizeof(buff),
+                         " Unblocking task_id %d and release from the queue\n",
+                         task_id);
                 write_window(log_win, buff);
             }
 
@@ -101,7 +105,9 @@ void semaphore::up()
         if (log_win != NULL)
         {
             char buff[256];
-            sprintf(buff, " Invalid Semaphore UP(). TaskID:%d does not own the resource\n", sched_ptr->get_task_id());
+            snprintf(buff, sizeof(buff),
+                     " Invalid Semaphore UP(). TaskID:%d does not own the resource\n",
+                     sched_ptr->get_task_id());
             write_window(log_win, buff);
         }
 
@@ -125,20 +131,20 @@ void semaphore::dump(int level)
     switch (level)
     {
         case 0:
-            sprintf(buff, " Sema_Value: %d\n", sema_value);
+            snprintf(buff, sizeof(buff), " Sema_Value: %d\n", sema_value);
             out += buff;
-            sprintf(buff, " Sema_Name: %s\n", resource_name.c_str());
+            snprintf(buff, sizeof(buff), " Sema_Name: %s\n", resource_name.c_str());
             out += buff;
-            sprintf(buff, " Obtained by Task-ID: %d\n", lucky_task);
+            snprintf(buff, sizeof(buff), " Obtained by Task-ID: %d\n", lucky_task);
             out += buff;
             break;
 
         case 1:
-            sprintf(buff, " Sema_Value: %d\n", sema_value);
+            snprintf(buff, sizeof(buff), " Sema_Value: %d\n", sema_value);
             out += buff;
-            sprintf(buff, " Sema_Name: %s\n", resource_name.c_str());
+            snprintf(buff, sizeof(buff), " Sema_Name: %s\n", resource_name.c_str());
             out += buff;
-            sprintf(buff, " Obtained by Task-ID: %d\n", lucky_task);
+            snprintf(buff, sizeof(buff), " Obtained by Task-ID: %d\n", lucky_task);
             out += buff;
             out += " Sema-Queue: ";
             out += sema_queue.to_string();

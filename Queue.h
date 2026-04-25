@@ -60,14 +60,16 @@ public:
             exit(1);
         }
 
-        T value = frontPtr->data;
-        frontPtr = frontPtr->next;
+        Node* oldFront = frontPtr;
+        T value = oldFront->data;
+        frontPtr = oldFront->next;
 
         if (frontPtr == nullptr)
         {
             rearPtr = nullptr;
         }
 
+        delete oldFront;
         return value;
     }
 
