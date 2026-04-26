@@ -24,6 +24,7 @@ mmu::mmu(int size, char default_initial_value, int page_size)
         memory[i] = default_initial_value;
     }
 
+    // This is representing the whole memory core.
     head = new MemBlock;
     head->status = "Free";
     head->handle = 0;
@@ -81,6 +82,7 @@ int mmu::round_up(int size)
         return size;
     }
 
+    // This is to allocate sizes that are going to be page-aligned to keep block boundaries consistent.
     return ((size / block_size) + 1) * block_size;
 }
 
@@ -115,6 +117,7 @@ void mmu::split_block(MemBlock* block, int requested_size)
         return;
     }
 
+    // Take the requested bytes from the front; the remainder bytes will stay as a new free block.
     MemBlock* newBlock = new MemBlock;
 
     newBlock->status = "Free";
@@ -145,6 +148,7 @@ int mmu::Mem_Alloc(int task_id, int size)
         return -1;
     }
 
+    // looks for the first fit, moves from the head and takes the first block that can meet the request.
     MemBlock* curr = head;
 
     while (curr != NULL)
@@ -160,6 +164,7 @@ int mmu::Mem_Alloc(int task_id, int size)
 
             for (int i = curr->start; i <= curr->end; i++)
             {
+                // '.' is used to be visualize the allocated bytes in dumps.
                 memory[i] = '.';
             }
 
@@ -198,6 +203,7 @@ int mmu::Mem_Free(int task_id, int memory_handle)
 
     for (int i = block->start; i <= block->end; i++)
     {
+        // '#' marks bytes that were just freed (before coalescing normalizes them).
         memory[i] = '#';
     }
 
@@ -294,6 +300,7 @@ int mmu::Mem_Write(int task_id, int memory_handle, char ch)
         return -1;
     }
 
+    // Moves the cursor used by one-byte reads/writes.
     memory[block->current_location] = ch;
     block->current_location++;
 
@@ -470,6 +477,7 @@ int mmu::Mem_Coalesce()
         }
         else
         {
+            // Only advance when there is no merge, after a merge we re-check the block.
             curr = curr->next;
         }
     }
@@ -521,6 +529,7 @@ void mmu::Mem_Dump(int starting_from, int num_bytes)
 
         if (line_count == 64)
         {
+            // Keep dump output the fized size (64 bytes/line).
             line_buffer[line_pos] = '\n';
             line_pos++;
             line_buffer[line_pos] = '\0';
