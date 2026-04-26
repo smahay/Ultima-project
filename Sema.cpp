@@ -1,7 +1,10 @@
 #include "Sema.h"
 #include <cstdio>
+#include <pthread.h>
 
 using namespace std;
+
+static pthread_mutex_t sema_global_lock = PTHREAD_MUTEX_INITIALIZER;
 
 // Constructor.
 semaphore::semaphore(int starting_value, string name, scheduler *theScheduler)
@@ -26,63 +29,83 @@ void semaphore::set_log_window(WINDOW *win)
 // Acquire or block.
 void semaphore::down(int taskID)
 {
-    // Already owner.
-    if (taskID == lucky_task)
+    bool was_queued = false;
+
+    while (true)
     {
-        if (log_win != NULL)
+        pthread_mutex_lock(&sema_global_lock);
+
+        // Already owner.
+        if (taskID == lucky_task)
         {
-            char buff[256];
-            snprintf(buff, sizeof(buff),
-                     " Task # %d already owns the resource! Ignore request.\n",
-                     lucky_task);
-            write_window(log_win, buff);
+            pthread_mutex_unlock(&sema_global_lock);
+            return;
         }
 
+        // Acquire the resource now.
+        if (sema_value >= 1)
+        {
+            sema_value--;
+            lucky_task = taskID;
+            pthread_mutex_unlock(&sema_global_lock);
+            dump(1);
+            return;
+        }
+
+        // Queue once and block until scheduler runs us again.
+        if (!was_queued)
+        {
+            sema_queue.En_Q(taskID);
+            was_queued = true;
+        }
+        pthread_mutex_unlock(&sema_global_lock);
+
+        if (sched_ptr != NULL)
+        {
+            sched_ptr->set_state(taskID, BLOCKED);
+        }
         dump(1);
-        return;
+
+        if (sched_ptr != NULL && sched_ptr->get_task_id() == taskID)
+        {
+            sched_ptr->yield();
+        }
+
+        if (sched_ptr != NULL)
+        {
+            tcb *task = sched_ptr->find_task(taskID);
+            sched_ptr->wait_until_running(task);
+        }
     }
-
-    // Acquire resource.
-    if (sema_value >= 1)
-    {
-        sema_value--;
-        lucky_task = taskID;
-        dump(1);
-        return;
-    }
-
-    // Queue and block.
-    sema_queue.En_Q(taskID);
-    sched_ptr->set_state(taskID, BLOCKED);
-    dump(1);
-
-    // Switch now.
-    if (sched_ptr->get_task_id() == taskID)
-    {
-        sched_ptr->yield();
-    }
-
-    dump(1);
 }
 
 // Release or handoff.
-void semaphore::up()
+void semaphore::up(int taskID)
 {
+    pthread_mutex_lock(&sema_global_lock);
+
     // Only owner can up().
-    if (sched_ptr->get_task_id() == lucky_task)
+    if (taskID == lucky_task)
     {
         // No waiters.
         if (sema_queue.isEmpty())
         {
             sema_value++;
             lucky_task = -1;
+            pthread_mutex_unlock(&sema_global_lock);
             dump(1);
         }
         else
         {
             // Wake next waiter.
             int task_id = sema_queue.De_Q();
-            sched_ptr->set_state(task_id, READY);
+            lucky_task = task_id;
+            pthread_mutex_unlock(&sema_global_lock);
+
+            if (sched_ptr != NULL)
+            {
+                sched_ptr->set_state(task_id, READY);
+            }
             if (log_win != NULL)
             {
                 char buff[256];
@@ -91,23 +114,26 @@ void semaphore::up()
                          task_id);
                 write_window(log_win, buff);
             }
-
-            lucky_task = task_id;
             dump(1);
 
             // Yield after handoff.
-            sched_ptr->yield();
+            if (sched_ptr != NULL)
+            {
+                sched_ptr->yield();
+            }
             dump(1);
         }
     }
     else
     {
+        pthread_mutex_unlock(&sema_global_lock);
+
         if (log_win != NULL)
         {
             char buff[256];
             snprintf(buff, sizeof(buff),
                      " Invalid Semaphore UP(). TaskID:%d does not own the resource\n",
-                     sched_ptr->get_task_id());
+                     taskID);
             write_window(log_win, buff);
         }
 
@@ -126,6 +152,8 @@ void semaphore::dump(int level)
     string out;
     char buff[256];
 
+    pthread_mutex_lock(&sema_global_lock);
+
     out += " --------- SEMAPHORE DUMP ---------\n";
 
     switch (level)
@@ -133,8 +161,9 @@ void semaphore::dump(int level)
         case 0:
             snprintf(buff, sizeof(buff), " Sema_Value: %d\n", sema_value);
             out += buff;
-            snprintf(buff, sizeof(buff), " Sema_Name: %s\n", resource_name.c_str());
-            out += buff;
+            out += " Sema_Name: ";
+            out += resource_name;
+            out += "\n";
             snprintf(buff, sizeof(buff), " Obtained by Task-ID: %d\n", lucky_task);
             out += buff;
             break;
@@ -142,8 +171,9 @@ void semaphore::dump(int level)
         case 1:
             snprintf(buff, sizeof(buff), " Sema_Value: %d\n", sema_value);
             out += buff;
-            snprintf(buff, sizeof(buff), " Sema_Name: %s\n", resource_name.c_str());
-            out += buff;
+            out += " Sema_Name: ";
+            out += resource_name;
+            out += "\n";
             snprintf(buff, sizeof(buff), " Obtained by Task-ID: %d\n", lucky_task);
             out += buff;
             out += " Sema-Queue: ";
@@ -156,6 +186,18 @@ void semaphore::dump(int level)
             break;
     }
 
+    pthread_mutex_unlock(&sema_global_lock);
+
     out += " ----------------------------------\n";
-    write_window(log_win, out.c_str());
+
+    char out_buffer[4096];
+    int i = 0;
+    while (i < (int) out.length() && i < 4095)
+    {
+        out_buffer[i] = out[i];
+        i++;
+    }
+    out_buffer[i] = '\0';
+
+    write_window(log_win, out_buffer);
 }

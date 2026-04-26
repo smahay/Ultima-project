@@ -9,7 +9,7 @@
 
 using namespace std;
 
-// Provided by Ultima.cpp
+// Comes from Ultima.cpp
 void write_window(WINDOW *Win, const char* text);
 
 struct MemBlock {

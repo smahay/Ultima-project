@@ -211,7 +211,27 @@ int mmu::Mem_Free(int task_id, int memory_handle)
     block->task_id = -1;
     block->current_location = -1;
 
+    // Show before/after coalescing so the transition
+    // from '#' to '.' can be observed during testing.
+    int dump_start = block->start - block_size;
+    if (dump_start < 0)
+    {
+        dump_start = 0;
+    }
+
+    int dump_bytes = block->size + (2 * block_size);
+    if (dump_start + dump_bytes > memory_size)
+    {
+        dump_bytes = memory_size - dump_start;
+    }
+
+    output_line(" MMU Dump BEFORE Coalesce:\n");
+    Mem_Dump(dump_start, dump_bytes);
+
     Mem_Coalesce();
+
+    output_line(" MMU Dump AFTER Coalesce:\n");
+    Mem_Dump(dump_start, dump_bytes);
 
     return 0;
 }
@@ -220,6 +240,12 @@ int mmu::Mem_Read(int task_id, int memory_handle, char* ch)
 {
     MemBlock* block = find_block(task_id, memory_handle);
     char buff[256];
+
+    if (ch == NULL)
+    {
+        output_line(" MMU Read FAILED: null output pointer.\n");
+        return -1;
+    }
 
     if (block == NULL)
     {
@@ -309,8 +335,6 @@ int mmu::Mem_Read(int task_id, int memory_handle, int offset_from_beg, int text_
     {
         text[i] = memory[read_start + i];
     }
-
-    text[text_size] = '\0';
 
     return 0;
 }
@@ -461,6 +485,9 @@ int mmu::Mem_Coalesce()
 void mmu::Mem_Dump(int starting_from, int num_bytes)
 {
     char buff[256];
+    char line_buffer[80];
+    int line_pos = 0;
+    int line_count = 0;
 
     if (starting_from < 0 || starting_from >= memory_size)
     {
@@ -482,25 +509,35 @@ void mmu::Mem_Dump(int starting_from, int num_bytes)
     }
 
     output_line("\n Memory CORE Dump:\n");
-
-    string line = " ";
+    line_buffer[0] = ' ';
+    line_pos = 1;
+    line_count = 0;
 
     for (int i = starting_from; i < ending; i++)
     {
-        line += memory[i];
+        line_buffer[line_pos] = memory[i];
+        line_pos++;
+        line_count++;
 
-        if ((i + 1) % 64 == 0)
+        if (line_count == 64)
         {
-            line += "\n";
-            output_line(line.c_str());
-            line = " ";
+            line_buffer[line_pos] = '\n';
+            line_pos++;
+            line_buffer[line_pos] = '\0';
+            output_line(line_buffer);
+
+            line_buffer[0] = ' ';
+            line_pos = 1;
+            line_count = 0;
         }
     }
 
-    if (line.length() > 1)
+    if (line_count > 0)
     {
-        line += "\n";
-        output_line(line.c_str());
+        line_buffer[line_pos] = '\n';
+        line_pos++;
+        line_buffer[line_pos] = '\0';
+        output_line(line_buffer);
     }
 
     snprintf(buff, sizeof(buff),
@@ -520,8 +557,22 @@ void mmu::Print_Table()
 
     while (curr != NULL)
     {
+        char status_text[16];
         char current_text[16];
         char task_text[16];
+
+        if (curr->status == "Free")
+        {
+            snprintf(status_text, sizeof(status_text), "Free");
+        }
+        else if (curr->status == "Used")
+        {
+            snprintf(status_text, sizeof(status_text), "Used");
+        }
+        else
+        {
+            snprintf(status_text, sizeof(status_text), "Unknown");
+        }
 
         if (curr->current_location == -1)
         {
@@ -543,7 +594,7 @@ void mmu::Print_Table()
 
         snprintf(buff, sizeof(buff),
                  " %-8s  %-8d  %-8d  %-8d  %-6d  %-8s  %-8s\n",
-                 curr->status.c_str(),
+                 status_text,
                  curr->handle,
                  curr->start,
                  curr->end,

@@ -32,7 +32,7 @@ public:
     void set_log_window(WINDOW *win);
 
     void down(int taskID);
-    void up();
+    void up(int taskID);
 
     void dump(int level);
 };

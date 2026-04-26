@@ -120,7 +120,7 @@ void *perform_simple_output(void *arguments)
 
             core_sema->down(task->task_id);
             task->memory_handle = mem_mgr->Mem_Alloc(task->task_id, task->memory_requested);
-            core_sema->up();
+            core_sema->up(task->task_id);
 
             if (task->memory_handle != -1)
             {
@@ -159,6 +159,7 @@ void *perform_simple_output(void *arguments)
 
             if (read_result == 0)
             {
+                read_back[22] = '\0';
                 sprintf(buff, " Task %d read from memory: %s\n",
                         task->task_id, read_back);
                 write_window(task->task_win, buff);
@@ -175,18 +176,52 @@ void *perform_simple_output(void *arguments)
             mem_mgr->Mem_Write(task->task_id, 1, 0, strlen(bad_text), bad_text);
         }
 
-        // Intentional out-of-memory test.
+        // Intentional out-of-memory test using valid-size requests.
         if (task->task_id == 0 && task->work_counter == 3)
         {
-            write_window(log_win, " Testing MMU failure with oversized request.\n");
-            core_sema->down(task->task_id);
-            int bad_handle = mem_mgr->Mem_Alloc(task->task_id, 2048);
-            core_sema->up();
+            int extra_handles[8];
+            int extra_count = 0;
+            const int test_request_size = 256;
 
-            if (bad_handle == -1)
+            write_window(log_win, " Testing MMU failure by exhausting memory with valid requests.\n");
+            core_sema->down(task->task_id);
+
+            while (extra_count < 8)
             {
-                write_window(task->task_win, " Oversized memory request correctly failed.\n");
+                int next_handle = mem_mgr->Mem_Alloc(task->task_id, test_request_size);
+                if (next_handle == -1)
+                {
+                    break;
+                }
+
+                extra_handles[extra_count] = next_handle;
+                extra_count++;
             }
+
+            core_sema->up(task->task_id);
+
+            sprintf(buff,
+                    " OOM test: Task 0 allocated %d extra blocks of %d bytes before failure.\n",
+                    extra_count, test_request_size);
+            write_window(log_win, buff);
+            write_window(task->task_win, buff);
+
+            if (extra_count < 8)
+            {
+                write_window(task->task_win, " Valid request failed due to exhausted/fragmented memory (expected).\n");
+            }
+            else
+            {
+                write_window(task->task_win, " Warning: OOM test did not fail during this run.\n");
+            }
+
+            // Cleanup temporary test allocations.
+            core_sema->down(task->task_id);
+            for (int i = 0; i < extra_count; i++)
+            {
+                mem_mgr->Mem_Free(task->task_id, extra_handles[i]);
+            }
+            core_sema->up(task->task_id);
         }
 
         if (task->task_id == 0)
@@ -275,7 +310,7 @@ void *perform_simple_output(void *arguments)
                 core_sema->down(task->task_id);
                 mem_mgr->Mem_Free(task->task_id, task->memory_handle);
                 task->memory_handle = -1;
-                core_sema->up();
+                core_sema->up(task->task_id);
             }
 
             sched->kill_task(task->task_id);
@@ -295,7 +330,7 @@ void *perform_simple_output(void *arguments)
                 core_sema->down(task->task_id);
                 mem_mgr->Mem_Free(task->task_id, task->memory_handle);
                 task->memory_handle = -1;
-                core_sema->up();
+                core_sema->up(task->task_id);
             }
 
             sched->kill_task(task->task_id);
